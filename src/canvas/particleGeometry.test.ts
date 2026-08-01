@@ -1,0 +1,65 @@
+import { describe, expect, it } from "vitest";
+import { createCamera, worldToScreen } from "./camera";
+import {
+  groupParticlesByPosition,
+  getRenderedParticleGeometry,
+  PARTICLE_DIAMETER_METRES,
+} from "./particleGeometry";
+
+describe("particle render geometry", () => {
+  it("renders a particle at exactly one metre in diameter at every zoom", () => {
+    const camera = createCamera(800, 600);
+    const initialGeometry = getRenderedParticleGeometry({ x: 100, y: 100 }, camera);
+
+    expect(PARTICLE_DIAMETER_METRES).toBe(1);
+    expect(initialGeometry.radius * 2).toBe(camera.pixelsPerMetre);
+
+    camera.pixelsPerMetre = 80;
+    const zoomedGeometry = getRenderedParticleGeometry({ x: 100, y: 100 }, camera);
+    expect(zoomedGeometry.radius * 2).toBe(camera.pixelsPerMetre);
+  });
+
+  it("centres the visual circle on the mathematical point in free space", () => {
+    const camera = createCamera(800, 600);
+    const pointPosition = { x: 100, y: 200 };
+    const geometry = getRenderedParticleGeometry(pointPosition, camera);
+
+    expect(geometry.centre).toEqual(pointPosition);
+  });
+
+  it("offsets the circle only enough to prevent enabled-ground overlap", () => {
+    const camera = createCamera(800, 600);
+    const groundPoint = worldToScreen({ x: 2, y: 0 }, camera);
+    const geometry = getRenderedParticleGeometry(groundPoint, camera, {
+      groundEnabled: true,
+    });
+    const groundScreenY = worldToScreen({ x: 0, y: 0 }, camera).y;
+
+    expect(geometry.centre.x).toBe(groundPoint.x);
+    expect(geometry.centre.y + geometry.radius).toBe(groundScreenY);
+  });
+
+  it("groups particles that occupy the same mathematical position", () => {
+    const particleState = {
+      position: { x: 2, y: 3 },
+      velocity: { x: 0, y: 0 },
+      acceleration: { x: 0, y: 0 },
+    };
+    const groups = groupParticlesByPosition(
+      [
+        { ...particleState, id: "first" },
+        { ...particleState, id: "second" },
+        {
+          ...particleState,
+          id: "elsewhere",
+          position: { x: 4, y: 3 },
+        },
+      ],
+    );
+
+    expect(groups.map((group) => group.map((particle) => particle.id))).toEqual([
+      ["first", "second"],
+      ["elsewhere"],
+    ]);
+  });
+});

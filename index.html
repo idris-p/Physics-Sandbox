@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="A diagram-like sandbox for exploring A-level mechanics."
+    />
+    <title>Mechanics Sandbox</title>
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="workspace" aria-label="Mechanics diagram">
+        <canvas id="scene-canvas" aria-label="Metre grid for placing and selecting particles"></canvas>
+
+        <div class="hotbar" role="toolbar" aria-label="Items">
+          <button
+            id="particle-tool"
+            class="hotbar-slot"
+              type="button"
+              data-tooltip="Particle"
+              aria-label="Particle: click to select or drag onto the scene"
+            aria-pressed="false"
+          >
+            <span class="hotbar-particle" aria-hidden="true"></span>
+            <span class="slot-key" aria-hidden="true">1</span>
+          </button>
+
+          <button
+            id="remove-particle"
+              class="hotbar-slot delete-slot"
+              type="button"
+              data-tooltip="Delete"
+              disabled
+            aria-label="Remove selected particle"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13M10 10v7M14 10v7" />
+            </svg>
+          </button>
+        </div>
+
+        <div class="properties-stack">
+        <div class="scene-properties-shell">
+          <button
+            id="toggle-scene-properties"
+            class="collapse-properties"
+            type="button"
+            aria-label="Collapse scene properties"
+            aria-expanded="true"
+          >
+            <svg class="chevron-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M8 4l8 8-8 8" />
+            </svg>
+          </button>
+        <aside class="scene-properties" aria-labelledby="scene-properties-title">
+          <div class="scene-properties-heading">
+            <h2 id="scene-properties-title">Scene Properties</h2>
+          </div>
+
+          <div class="property-row">
+            <span>Ground</span>
+            <label class="toggle-control" for="ground-toggle">
+              <input id="ground-toggle" type="checkbox" checked />
+              <span class="toggle-track" aria-hidden="true"><span></span></span>
+              <span class="visually-hidden">Ground enabled</span>
+            </label>
+            <div class="ground-height-control" aria-label="Ground fixed at y equals zero metres">
+              <i>y</i>
+              <span>=</span>
+              <span class="number-field ground-height-field">
+                <output>0</output>
+              </span>
+              <span>m</span>
+            </div>
+          </div>
+
+          <div class="property-row gravity-row">
+            <span>Gravity</span>
+            <span class="property-spacer" aria-hidden="true"></span>
+            <label class="gravity-control" for="gravity-input">
+              <i class="physics-symbol">g</i>
+              <span>=</span>
+              <span class="number-field">
+                <input id="gravity-input" type="text" inputmode="decimal" value="9.8" aria-describedby="gravity-unit gravity-error" />
+              </span>
+              <span id="gravity-unit" class="gravity-unit">m s<sup>−2</sup></span>
+            </label>
+            </div>
+          <span id="gravity-error" class="field-error" role="alert"></span>
+          <div class="scene-actions">
+            <button id="clear-scene" type="button">Clear Scene</button>
+          </div>
+        </aside>
+        </div>
+
+        <aside
+          id="particle-properties"
+          class="particle-properties is-hidden"
+          aria-labelledby="particle-properties-title"
+        >
+          <h2 id="particle-properties-title">Particle Properties</h2>
+          <div class="particle-property-row">
+            <span class="particle-property-name">Position</span>
+            <div class="position-values">
+              <div class="position-value">
+                <i>x</i><span>=</span><output id="particle-position-x">0</output><span>m</span>
+              </div>
+              <div class="position-value">
+                <i>y</i><span>=</span><output id="particle-position-y">0</output><span>m</span>
+              </div>
+            </div>
+          </div>
+          <div class="scalar-property-row">
+            <span class="scalar-property-name">Mass</span>
+            <label class="scalar-property-control" for="particle-mass-input">
+              <i>m</i><span>=</span>
+              <span class="property-number-field">
+                <input id="particle-mass-input" type="text" inputmode="decimal" value="1" />
+              </span>
+              <span>kg</span>
+            </label>
+          </div>
+        </aside>
+
+        <aside
+          id="ground-properties"
+          class="ground-properties is-hidden"
+          aria-labelledby="ground-properties-title"
+        >
+          <h2 id="ground-properties-title">Ground Properties</h2>
+          <div class="ground-rough-row">
+            <span>Rough</span>
+            <label class="toggle-control" for="ground-rough-toggle">
+              <input id="ground-rough-toggle" type="checkbox" />
+              <span class="toggle-track" aria-hidden="true"><span></span></span>
+              <span class="visually-hidden">Rough ground enabled</span>
+            </label>
+            <label class="ground-friction-control is-hidden" for="ground-friction-input">
+              <i class="physics-symbol">μ</i><span>=</span>
+              <span class="property-number-field">
+                <input id="ground-friction-input" type="text" inputmode="decimal" value="0" />
+              </span>
+            </label>
+          </div>
+        </aside>
+        </div>
+
+        <div class="scale-key" aria-hidden="true"><span></span>1 m</div>
+        <div class="zoom-controls" aria-label="Zoom controls">
+          <button id="zoom-out" type="button" aria-label="Zoom out"><span class="zoom-symbol">−</span></button>
+          <button id="reset-view" type="button" aria-label="Reset view">100%</button>
+          <button id="zoom-in" type="button" aria-label="Zoom in"><span class="zoom-symbol">+</span></button>
+        </div>
+
+        <div class="time-controls" aria-label="Time controls">
+          <button id="previous-time" class="time-button icon-only" type="button" aria-label="Step backward">
+            <svg class="double-chevron-icon" viewBox="0 0 32 24" aria-hidden="true">
+              <path d="M14 4L6 12l8 8M26 4l-8 8 8 8" />
+            </svg>
+          </button>
+          <label class="time-display" for="time-input">
+            <i>t</i>
+            <span>=</span>
+            <input id="time-input" type="text" inputmode="decimal" value="0.00" aria-label="Simulation time in seconds" />
+            <span>s</span>
+          </label>
+          <button id="play-time" class="play-button" type="button" aria-label="Play">
+            <svg class="playback-icon" viewBox="0 0 28 28" aria-hidden="true">
+              <path class="play-shape" d="M9 5l14 9-14 9z" />
+              <path class="pause-shape" d="M9 6v16M19 6v16" />
+            </svg>
+          </button>
+          <button id="next-time" class="time-button icon-only" type="button" aria-label="Step forward">
+            <svg class="double-chevron-icon" viewBox="0 0 32 24" aria-hidden="true">
+              <path d="M6 4l8 8-8 8M18 4l8 8-8 8" />
+            </svg>
+          </button>
+          <label class="step-control" for="step-interval">
+            Step
+            <select id="step-interval">
+              <option value="1" selected>1 s</option>
+              <option value="0.1">0.1 s</option>
+              <option value="0.01">0.01 s</option>
+            </select>
+          </label>
+          <button id="reset-time" class="reset-button" type="button">Reset</button>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

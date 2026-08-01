@@ -1,0 +1,124 @@
+import { describe, expect, it } from "vitest";
+import { createParticle } from "../model/Particle";
+import { calculateParticleState } from "./calculateParticleState";
+
+const particle = createParticle("particle-1", { x: 4, y: 10 });
+
+describe("calculateParticleState", () => {
+  it("uses exact constant-acceleration kinematics before impact", () => {
+    const state = calculateParticleState(particle, 1, {
+      gravity: 9.8,
+      groundEnabled: false,
+    });
+
+    expect(state.position.y).toBeCloseTo(5.1, 12);
+    expect(state.velocity.y).toBeCloseTo(-9.8, 12);
+    expect(state.acceleration.y).toBe(-9.8);
+  });
+
+  it("never changes horizontal position, velocity, or acceleration", () => {
+    const state = calculateParticleState(particle, 100, {
+      gravity: 9.8,
+      groundEnabled: false,
+    });
+
+    expect(state.position.x).toBe(4);
+    expect(state.velocity.x).toBe(0);
+    expect(state.acceleration.x).toBe(0);
+  });
+
+  it("rests exactly on the ground at and after analytical impact", () => {
+    const impactTime = Math.sqrt((2 * 10) / 9.8);
+    const atImpact = calculateParticleState(particle, impactTime, {
+      gravity: 9.8,
+      groundEnabled: true,
+    });
+    const afterImpact = calculateParticleState(particle, impactTime + 0.01, {
+      gravity: 9.8,
+      groundEnabled: true,
+    });
+
+    expect(atImpact.position.y).toBe(0);
+    expect(afterImpact.position.y).toBe(0);
+    expect(afterImpact.velocity.y).toBe(0);
+    expect(afterImpact.acceleration.y).toBe(0);
+  });
+
+  it("uses a configured ground height for collision", () => {
+    const state = calculateParticleState(particle, 2, {
+      gravity: 9.8,
+      groundEnabled: true,
+      groundHeight: 5,
+    });
+
+    expect(state.position.y).toBe(5);
+    expect(state.velocity.y).toBe(0);
+    expect(state.acceleration.y).toBe(0);
+  });
+
+  it("treats the mathematical point as the collision position", () => {
+    const oneMetreHigh = createParticle("point-particle", { x: 0, y: 1 });
+    const beforePointImpact = calculateParticleState(oneMetreHigh, 0.4, {
+      gravity: 9.8,
+      groundEnabled: true,
+    });
+
+    expect(beforePointImpact.position.y).toBeCloseTo(0.216, 12);
+    expect(beforePointImpact.velocity.y).toBeCloseTo(-3.92, 12);
+  });
+
+  it("keeps a particle initially on enabled ground at rest", () => {
+    const resting = createParticle("resting", { x: 0, y: 0 });
+    const state = calculateParticleState(resting, 3, {
+      gravity: 9.8,
+      groundEnabled: true,
+    });
+
+    expect(state.position.y).toBe(0);
+    expect(state.velocity.y).toBe(0);
+    expect(state.acceleration.y).toBe(0);
+  });
+
+  it("allows the same particle to fall below zero when ground is disabled", () => {
+    const resting = createParticle("falling", { x: 0, y: 0 });
+    const state = calculateParticleState(resting, 1, {
+      gravity: 9.8,
+      groundEnabled: false,
+    });
+
+    expect(state.position.y).toBeCloseTo(-4.9, 12);
+    expect(state.velocity.y).toBeCloseTo(-9.8, 12);
+  });
+
+  it("uses the supplied global gravity", () => {
+    const earthState = calculateParticleState(particle, 1, {
+      gravity: 9.8,
+      groundEnabled: false,
+    });
+    const moonState = calculateParticleState(particle, 1, {
+      gravity: 1.625,
+      groundEnabled: false,
+    });
+
+    expect(earthState.position.y).toBeCloseTo(5.1, 12);
+    expect(moonState.position.y).toBeCloseTo(9.1875, 12);
+  });
+
+  it("produces the same result for stepped and direct time requests", () => {
+    const steppedTimes = [1, 2, 3];
+    const steppedState = steppedTimes
+      .map((time) =>
+        calculateParticleState(particle, time, {
+          gravity: 9.8,
+          groundEnabled: false,
+        }),
+      )
+      .at(-1);
+    const directState = calculateParticleState(particle, 3, {
+      gravity: 9.8,
+      groundEnabled: false,
+    });
+
+    expect(steppedState).toEqual(directState);
+  });
+});
