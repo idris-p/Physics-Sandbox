@@ -9,12 +9,30 @@ import {
 } from "./canvas/camera";
 import { attachCanvasInteraction, type Tool } from "./canvas/interaction";
 import { render } from "./canvas/renderer";
+import {
+  assessConstantAccelerationInterval,
+  calculateKinematicDisplayValues,
+  calculateSuvatEquationResults,
+} from "./kinematics/suvat";
+import { negateEnteredDecimal } from "./kinematics/exactDisplay";
+import { calculateVerticalKinematicState } from "./kinematics/verticalKinematics";
 import { createParticle } from "./model/Particle";
 import type { ParticleState } from "./model/Particle";
 import { createScene } from "./model/Scene";
 import { calculateSceneState } from "./physics/calculateSceneState";
-import { advancePlayback, getNextIntegerSecond } from "./simulation/playback";
-import { createControls, type PlaybackButtonState } from "./ui/controls";
+import { editParticleInitialVerticalVelocity } from "./simulation/editInitialConditions";
+import {
+  advancePlayback,
+  earliestPauseTime,
+  getNextGroundContactPauseTime,
+  getNextIntegerSecond,
+  getNextMaximumHeightPauseTime,
+} from "./simulation/playback";
+import {
+  createControls,
+  formatPlaybackTime,
+  type PlaybackButtonState,
+} from "./ui/controls";
 
 const scene = createScene();
 const camera = createCamera(1, 1);
@@ -23,6 +41,7 @@ let selectedParticleId: string | null = null;
 let groundSelected = false;
 let draggedParticleId: string | null = null;
 let currentTime = 0;
+let currentTimeEnteredText: string | undefined = "0";
 let isPlaying = false;
 let pendingPauseTime: number | null = null;
 let previousFrameTimestamp: number | null = null;
@@ -48,8 +67,9 @@ const controls = createControls({
     resetTime();
     updateUi();
   },
-  onGravityChange: (gravity) => {
+  onGravityChange: (gravity, enteredText) => {
     scene.settings.gravity = gravity;
+    scene.settings.gravityInput = enteredText;
     resetTime();
   },
   onParticleMassChange: (mass) => {
@@ -57,6 +77,42 @@ const controls = createControls({
       (candidate) => candidate.id === selectedParticleId,
     );
     if (particle) particle.mass = mass;
+    updateUi();
+  },
+  onParticleInitialVelocityChange: (velocity, enteredText) => {
+    const particleIndex = scene.particles.findIndex(
+      (particle) => particle.id === selectedParticleId,
+    );
+    if (particleIndex < 0) return;
+
+    scene.particles[particleIndex] = editParticleInitialVerticalVelocity(
+      scene.particles[particleIndex],
+      velocity,
+      scene.settings.positiveDirection,
+      enteredText,
+    );
+    updateUi();
+  },
+  onParticlePauseAtMaximumHeightChange: (enabled) => {
+    const particle = scene.particles.find(
+      (candidate) => candidate.id === selectedParticleId,
+    );
+    if (!particle) return;
+
+    particle.pauseAtMaximumHeight = enabled;
+    updateUi();
+  },
+  onParticlePauseAtGroundContactChange: (enabled) => {
+    const particle = scene.particles.find(
+      (candidate) => candidate.id === selectedParticleId,
+    );
+    if (!particle) return;
+
+    particle.pauseAtGroundContact = enabled;
+    updateUi();
+  },
+  onPositiveDirectionChange: (direction) => {
+    scene.settings.positiveDirection = direction;
     updateUi();
   },
   onGroundFrictionChange: (coefficient) => {
@@ -68,9 +124,10 @@ const controls = createControls({
     updateUi();
   },
   onClearScene: clearScene,
-  onTimeChange: (time) => {
+  onTimeChange: (time, enteredText) => {
     setPlaying(false);
     currentTime = time;
+    currentTimeEnteredText = enteredText;
     updateUi();
   },
   onPrevious: (interval) => stepTime(-interval),
@@ -118,8 +175,6 @@ attachCanvasInteraction({
     scene.particles.push(particle);
     selectedParticleId = particle.id;
     groundSelected = false;
-    activeTool = "select";
-    controls.setTool("select");
     resetTime();
     updateUi();
   },
@@ -134,7 +189,6 @@ attachCanvasInteraction({
     }
 
     particle.initialPosition = { ...position };
-    particle.initialVelocity = { x: 0, y: 0 };
     selectedParticleId = particleId;
     groundSelected = false;
     resetTime();
@@ -191,19 +245,41 @@ function resizeCanvas(): void {
 }
 
 function renderFrame(timestamp: number): void {
+  let playbackAdvanced = false;
+
   if (isPlaying) {
     if (previousFrameTimestamp !== null) {
+      const maximumHeightPauseTime = getNextMaximumHeightPauseTime(
+        scene.particles,
+        currentTime,
+        scene.settings.gravity,
+      );
+      const groundContactPauseTime = getNextGroundContactPauseTime(
+        scene.particles,
+        currentTime,
+        scene.settings.gravity,
+        scene.groundEnabled,
+        scene.groundHeight,
+      );
       const advance = advancePlayback(
         currentTime,
         (timestamp - previousFrameTimestamp) / 1000,
-        pendingPauseTime,
+        earliestPauseTime(
+          earliestPauseTime(pendingPauseTime, maximumHeightPauseTime),
+          groundContactPauseTime,
+        ),
       );
       currentTime = advance.time;
+      currentTimeEnteredText = undefined;
+      playbackAdvanced = true;
 
       if (advance.reachedScheduledPause) {
         setPlaying(false);
       }
-      controls.setTime(currentTime);
+      controls.setTime(
+        currentTime,
+        isPlaying ? formatPlaybackTime(currentTime) : undefined,
+      );
     }
 
     if (isPlaying) previousFrameTimestamp = timestamp;
@@ -212,6 +288,9 @@ function renderFrame(timestamp: number): void {
   }
 
   const activeParticleStates = calculateActiveParticleStates();
+  if ((isPlaying || playbackAdvanced) && selectedParticleId) {
+    updateSelectionUi(activeParticleStates);
+  }
   render(
     context,
     scene,
@@ -221,6 +300,8 @@ function renderFrame(timestamp: number): void {
     selectedParticleId,
     groundSelected,
     camera,
+    currentTime,
+    timestamp,
   );
   requestAnimationFrame(renderFrame);
 }
@@ -228,12 +309,14 @@ function renderFrame(timestamp: number): void {
 function stepTime(interval: number): void {
   setPlaying(false);
   currentTime = Math.max(0, roundTime(currentTime + interval));
+  currentTimeEnteredText = undefined;
   updateUi();
 }
 
 function resetTime(): void {
   setPlaying(false);
   currentTime = 0;
+  currentTimeEnteredText = "0";
   updateUi();
 }
 
@@ -246,11 +329,10 @@ function setPlaying(playing: boolean): void {
 
 function togglePlayback(): void {
   if (!isPlaying) {
-    selectedParticleId = null;
-    groundSelected = false;
     activeTool = "select";
     controls.setTool("select");
     setPlaying(true);
+    currentTimeEnteredText = undefined;
     updateUi();
     return;
   }
@@ -287,8 +369,20 @@ function clearScene(): void {
 }
 
 function updateUi(): void {
+  const activeParticleStates = calculateActiveParticleStates();
+  updateSelectionUi(activeParticleStates);
+  controls.setPositiveDirection(scene.settings.positiveDirection);
+  controls.setTime(
+    currentTime,
+    isPlaying ? formatPlaybackTime(currentTime) : currentTimeEnteredText,
+  );
+  controls.setPlaybackState(getPlaybackButtonState());
+  controls.setZoom(camera.pixelsPerMetre);
+}
+
+function updateSelectionUi(activeParticleStates: ParticleState[]): void {
   const selectedParticleState = selectedParticleId
-    ? calculateActiveParticleStates().find(
+    ? activeParticleStates.find(
         (particle) => particle.id === selectedParticleId,
       ) ?? null
     : null;
@@ -298,11 +392,7 @@ function updateUi(): void {
   controls.setSelected(selectedParticleState !== null);
   controls.setSelectionProperties(
     selectedParticleState && selectedParticle
-      ? {
-          type: "particle",
-          position: selectedParticleState.position,
-          mass: selectedParticle.mass,
-        }
+      ? createParticleSelectionProperties(selectedParticle, selectedParticleState)
       : groundSelected && scene.groundEnabled
         ? {
             type: "ground",
@@ -311,9 +401,72 @@ function updateUi(): void {
           }
         : null,
   );
-  controls.setTime(currentTime);
-  controls.setPlaybackState(getPlaybackButtonState());
-  controls.setZoom(camera.pixelsPerMetre);
+}
+
+function createParticleSelectionProperties(
+  particle: (typeof scene.particles)[number],
+  particleState: ParticleState,
+) {
+  const kinematics = calculateVerticalKinematicState(
+    particle,
+    particleState,
+    currentTime,
+    scene.settings.positiveDirection,
+  );
+  const suvatInterval = assessConstantAccelerationInterval(
+    particle,
+    currentTime,
+    {
+      gravity: scene.settings.gravity,
+      groundEnabled: scene.groundEnabled,
+      groundHeight: scene.groundHeight,
+    },
+  );
+  const enteredValues = {
+    u: getInitialVelocityEnteredText(particle),
+    a: getGravityEnteredText(kinematics.a),
+    t: currentTimeEnteredText,
+  };
+
+  return {
+    type: "particle" as const,
+    position: particleState.position,
+    mass: particle.mass,
+    initialVelocityText: getInitialVelocityEnteredText(particle),
+    pauseAtMaximumHeight: particle.pauseAtMaximumHeight,
+    pauseAtGroundContact: particle.pauseAtGroundContact,
+    groundEnabled: scene.groundEnabled,
+    kinematics: calculateKinematicDisplayValues(
+      kinematics,
+      enteredValues,
+      suvatInterval.valid,
+    ),
+    suvatInterval,
+    suvatEquations: suvatInterval.valid
+      ? calculateSuvatEquationResults(kinematics, enteredValues)
+      : [],
+  };
+}
+
+function getInitialVelocityEnteredText(
+  particle: (typeof scene.particles)[number],
+): string {
+  const input = particle.initialVelocityInput;
+  return input.positiveDirection === scene.settings.positiveDirection
+    ? input.text
+    : negateEnteredDecimal(input.text);
+}
+
+function getGravityEnteredText(acceleration: number): string | undefined {
+  const gravityAcceleration =
+    scene.settings.positiveDirection === "up"
+      ? -scene.settings.gravity
+      : scene.settings.gravity;
+  if (Math.abs(acceleration - gravityAcceleration) > 1e-12) return undefined;
+
+  return gravityAcceleration < 0
+    ? negateEnteredDecimal(scene.settings.gravityInput)
+    : scene.settings.gravityInput;
 }
 
 function calculateActiveParticleStates(): ParticleState[] {

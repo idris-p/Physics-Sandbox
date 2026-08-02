@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatPlaybackTime,
   formatTime,
   parseGravity,
   parsePositiveProperty,
+  parseSignedValue,
   parseTime,
   parseWorldCoordinate,
 } from "./controls";
@@ -32,13 +34,26 @@ describe("parseTime", () => {
     expect(parseTime(value)).toBe(Number(value));
   });
 
-  it.each(["-1", "1.001", "", "later"])("rejects %s", (value) => {
+  it("accepts arbitrary decimal precision for direct scene inspection", () => {
+    expect(parseTime("1.001")).toBe(1.001);
+    expect(parseTime("0.123456789123")).toBe(0.123456789123);
+    expect(parseTime(".0000001")).toBe(0.0000001);
+  });
+
+  it.each(["-1", "1.", "", "later"])("rejects %s", (value) => {
     expect(parseTime(value)).toBeNull();
   });
 
-  it("always formats the timer with two decimal places", () => {
-    expect(formatTime(0)).toBe("0.00");
-    expect(formatTime(3.126)).toBe("3.13");
+  it("shows the available numeric precision without padding or rounding", () => {
+    expect(formatTime(0)).toBe("0");
+    expect(formatTime(3.126)).toBe("3.126");
+    expect(formatTime(0.123456789123)).toBe("0.123456789123");
+  });
+
+  it("limits the live playback display to exactly two decimal places", () => {
+    expect(formatPlaybackTime(0)).toBe("0.00");
+    expect(formatPlaybackTime(1.23456789)).toBe("1.23");
+    expect(formatPlaybackTime(3.126)).toBe("3.13");
   });
 });
 
@@ -53,4 +68,14 @@ describe("parseWorldCoordinate", () => {
       expect(parseWorldCoordinate(value)).toBeNull();
     },
   );
+});
+
+describe("parseSignedValue", () => {
+  it.each(["4", "-2.5", "0", "3.125", "-.25"])("accepts %s", (value) => {
+    expect(parseSignedValue(value)).toBe(Number(value));
+  });
+
+  it.each(["3.1251", "1.", "", "fast", "1e3"])("rejects %s", (value) => {
+    expect(parseSignedValue(value)).toBeNull();
+  });
 });

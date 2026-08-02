@@ -13,7 +13,10 @@ export function calculateGroundImpactTime(
   gravity: number,
   groundHeight = GROUND_HEIGHT,
 ): number | null {
-  if (initialHeight <= groundHeight) {
+  if (
+    initialHeight < groundHeight ||
+    (initialHeight === groundHeight && initialVerticalVelocity <= 0)
+  ) {
     return 0;
   }
 
@@ -38,6 +41,7 @@ export function calculateParticleState(
   const gravity = Math.max(0, environment.gravity);
   const groundHeight = environment.groundHeight ?? GROUND_HEIGHT;
   const { initialPosition, initialVelocity } = particle;
+  let isFirstContact = false;
 
   if (environment.groundEnabled) {
     const impactTime = calculateGroundImpactTime(
@@ -47,7 +51,19 @@ export function calculateParticleState(
       groundHeight,
     );
 
-    if (impactTime !== null && safeTime >= impactTime) {
+    // A positive first-contact instant belongs to the free-fall phase. This keeps
+    // its velocity and acceleration available for an exact SUVAT analysis. Any
+    // time after contact, or contact at t = 0, is the resting phase.
+    const impactTolerance = Number.EPSILON * Math.max(1, safeTime) * 16;
+    isFirstContact =
+      impactTime !== null &&
+      impactTime > 0 &&
+      Math.abs(safeTime - impactTime) <= impactTolerance;
+
+    if (
+      impactTime !== null &&
+      (impactTime === 0 || safeTime > impactTime + impactTolerance)
+    ) {
       return {
         id: particle.id,
         position: { x: initialPosition.x, y: groundHeight },
@@ -61,10 +77,11 @@ export function calculateParticleState(
     id: particle.id,
     position: {
       x: initialPosition.x,
-      y:
-        initialPosition.y +
-        initialVelocity.y * safeTime -
-        0.5 * gravity * safeTime ** 2,
+      y: isFirstContact
+        ? groundHeight
+        : initialPosition.y +
+          initialVelocity.y * safeTime -
+          0.5 * gravity * safeTime ** 2,
     },
     velocity: {
       x: 0,

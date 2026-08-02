@@ -16,6 +16,27 @@ describe("calculateParticleState", () => {
     expect(state.acceleration.y).toBe(-9.8);
   });
 
+  it("uses positive and negative vertical initial velocity", () => {
+    const upward = createParticle("upward", { x: 0, y: 10 });
+    const downward = createParticle("downward", { x: 0, y: 10 });
+    upward.initialVelocity.y = 5;
+    downward.initialVelocity.y = -2.5;
+
+    const upwardState = calculateParticleState(upward, 1, {
+      gravity: 9.8,
+      groundEnabled: false,
+    });
+    const downwardState = calculateParticleState(downward, 1, {
+      gravity: 9.8,
+      groundEnabled: false,
+    });
+
+    expect(upwardState.position.y).toBeCloseTo(10.1, 12);
+    expect(upwardState.velocity.y).toBeCloseTo(-4.8, 12);
+    expect(downwardState.position.y).toBeCloseTo(2.6, 12);
+    expect(downwardState.velocity.y).toBeCloseTo(-12.3, 12);
+  });
+
   it("never changes horizontal position, velocity, or acceleration", () => {
     const state = calculateParticleState(particle, 100, {
       gravity: 9.8,
@@ -27,7 +48,7 @@ describe("calculateParticleState", () => {
     expect(state.acceleration.x).toBe(0);
   });
 
-  it("rests exactly on the ground at and after analytical impact", () => {
+  it("uses the free-fall boundary state at impact, then rests after impact", () => {
     const impactTime = Math.sqrt((2 * 10) / 9.8);
     const atImpact = calculateParticleState(particle, impactTime, {
       gravity: 9.8,
@@ -39,6 +60,8 @@ describe("calculateParticleState", () => {
     });
 
     expect(atImpact.position.y).toBe(0);
+    expect(atImpact.velocity.y).toBeCloseTo(-9.8 * impactTime, 12);
+    expect(atImpact.acceleration.y).toBe(-9.8);
     expect(afterImpact.position.y).toBe(0);
     expect(afterImpact.velocity.y).toBe(0);
     expect(afterImpact.acceleration.y).toBe(0);
@@ -77,6 +100,25 @@ describe("calculateParticleState", () => {
     expect(state.position.y).toBe(0);
     expect(state.velocity.y).toBe(0);
     expect(state.acceleration.y).toBe(0);
+  });
+
+  it("allows a particle with upward initial velocity to leave the ground", () => {
+    const launched = createParticle("launched", { x: 0, y: 0 });
+    launched.initialVelocity.y = 5;
+
+    const ascending = calculateParticleState(launched, 0.25, {
+      gravity: 9.8,
+      groundEnabled: true,
+    });
+    const returned = calculateParticleState(launched, 2 * 5 / 9.8 + 0.01, {
+      gravity: 9.8,
+      groundEnabled: true,
+    });
+
+    expect(ascending.position.y).toBeCloseTo(0.94375, 12);
+    expect(ascending.velocity.y).toBeCloseTo(2.55, 12);
+    expect(returned.position.y).toBe(0);
+    expect(returned.velocity.y).toBe(0);
   });
 
   it("allows the same particle to fall below zero when ground is disabled", () => {

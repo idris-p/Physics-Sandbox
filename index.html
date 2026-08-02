@@ -41,7 +41,7 @@
           </button>
         </div>
 
-        <div class="properties-stack">
+        <div class="scene-properties-position">
         <div class="scene-properties-shell">
           <button
             id="toggle-scene-properties"
@@ -59,21 +59,14 @@
             <h2 id="scene-properties-title">Scene Properties</h2>
           </div>
 
-          <div class="property-row">
+          <div class="property-row ground-property-row">
             <span>Ground</span>
+            <span class="property-spacer" aria-hidden="true"></span>
             <label class="toggle-control" for="ground-toggle">
               <input id="ground-toggle" type="checkbox" checked />
               <span class="toggle-track" aria-hidden="true"><span></span></span>
               <span class="visually-hidden">Ground enabled</span>
             </label>
-            <div class="ground-height-control" aria-label="Ground fixed at y equals zero metres">
-              <i>y</i>
-              <span>=</span>
-              <span class="number-field ground-height-field">
-                <output>0</output>
-              </span>
-              <span>m</span>
-            </div>
           </div>
 
           <div class="property-row gravity-row">
@@ -87,20 +80,39 @@
               </span>
               <span id="gravity-unit" class="gravity-unit">m s<sup>−2</sup></span>
             </label>
-            </div>
+          </div>
           <span id="gravity-error" class="field-error" role="alert"></span>
+          <div class="positive-direction-row scene-positive-direction-row">
+            <span>Positive direction</span>
+            <div class="direction-selector" role="group" aria-label="Positive vertical direction">
+              <button id="positive-up" type="button" aria-label="Positive direction up" aria-pressed="true">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 19V5M6.5 10.5 12 5l5.5 5.5" />
+                </svg>
+              </button>
+              <button id="positive-down" type="button" aria-label="Positive direction down" aria-pressed="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 5v14m5.5-5.5L12 19l-5.5-5.5" />
+                </svg>
+              </button>
+            </div>
+          </div>
           <div class="scene-actions">
             <button id="clear-scene" type="button">Clear Scene</button>
           </div>
         </aside>
         </div>
+        </div>
 
+        <div class="context-properties-stack">
         <aside
           id="particle-properties"
           class="particle-properties is-hidden"
           aria-labelledby="particle-properties-title"
         >
           <h2 id="particle-properties-title">Particle Properties</h2>
+          <div class="particle-properties-scroll">
+          <div class="particle-properties-content">
           <div class="particle-property-row">
             <span class="particle-property-name">Position</span>
             <div class="position-values">
@@ -121,6 +133,74 @@
               </span>
               <span>kg</span>
             </label>
+          </div>
+          <div class="scalar-property-row initial-velocity-row">
+            <span class="scalar-property-name">Initial velocity</span>
+            <label class="scalar-property-control" for="particle-initial-velocity-input">
+              <i>u</i><span>=</span>
+              <span class="property-number-field">
+                <input
+                  id="particle-initial-velocity-input"
+                  type="text"
+                  inputmode="decimal"
+                  value="0"
+                  aria-describedby="initial-velocity-unit"
+                />
+              </span>
+              <span id="initial-velocity-unit" class="compact-unit">m s<sup>−1</sup></span>
+            </label>
+          </div>
+
+          <div class="particle-pause-settings">
+            <div class="particle-pause-heading">Pause scene at:</div>
+            <div class="particle-pause-option">
+              <span>Maximum height</span>
+              <label class="toggle-control" for="particle-pause-at-maximum-toggle">
+                <input id="particle-pause-at-maximum-toggle" type="checkbox" />
+                <span class="toggle-track" aria-hidden="true"><span></span></span>
+                <span class="visually-hidden">Pause scene at this particle's maximum height</span>
+              </label>
+            </div>
+            <div id="particle-pause-at-ground-row" class="particle-pause-option">
+              <span>Ground contact</span>
+              <label class="toggle-control" for="particle-pause-at-ground-toggle">
+                <input id="particle-pause-at-ground-toggle" type="checkbox" />
+                <span class="toggle-track" aria-hidden="true"><span></span></span>
+                <span class="visually-hidden">Pause scene when this particle contacts the ground</span>
+              </label>
+            </div>
+          </div>
+
+          <section class="kinematics-section" aria-labelledby="kinematics-title">
+            <button
+              id="toggle-particle-analysis"
+              class="particle-analysis-toggle"
+              type="button"
+              aria-expanded="false"
+              aria-controls="particle-analysis-content"
+            >
+              <span id="kinematics-title">Kinematics</span>
+              <svg class="analysis-chevron" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m9 5 7 7-7 7" />
+              </svg>
+            </button>
+            <div id="particle-analysis-content" class="particle-analysis-content" hidden>
+              <dl class="kinematic-values">
+                <div><dt><i>s</i></dt><dd><output id="kinematic-s">0</output><span>m</span></dd></div>
+                <div><dt><i>u</i></dt><dd><output id="kinematic-u">0</output><span>m s<sup>−1</sup></span></dd></div>
+                <div><dt><i>v</i></dt><dd><output id="kinematic-v">0</output><span>m s<sup>−1</sup></span></dd></div>
+                <div><dt><i>a</i></dt><dd><output id="kinematic-a">0</output><span>m s<sup>−2</sup></span></dd></div>
+                <div><dt><i>t</i></dt><dd><output id="kinematic-t">0</output><span>s</span></dd></div>
+              </dl>
+
+              <section class="suvat-section" aria-labelledby="suvat-title">
+                <h3 id="suvat-title">SUVAT</h3>
+                <p id="suvat-invalid-reason" class="suvat-invalid is-hidden"></p>
+                <div id="suvat-equations" class="suvat-equations"></div>
+              </section>
+            </div>
+          </section>
+          </div>
           </div>
         </aside>
 
@@ -147,6 +227,35 @@
         </aside>
         </div>
 
+        <dialog
+          id="suvat-calculation-dialog"
+          class="suvat-calculation-dialog"
+          aria-labelledby="suvat-calculation-dialog-title"
+        >
+          <div class="suvat-calculation-dialog-shell">
+            <header class="suvat-calculation-dialog-header">
+              <h2 id="suvat-calculation-dialog-title">SUVAT Calculation</h2>
+              <button
+                id="close-suvat-calculation-dialog"
+                type="button"
+                aria-label="Close enlarged SUVAT calculation"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M6 6l12 12M18 6 6 18" />
+                </svg>
+              </button>
+            </header>
+            <div class="suvat-calculation-dialog-content">
+              <article id="suvat-calculation-dialog-equation" class="suvat-modal-equation">
+                <strong class="suvat-formula"></strong>
+                <span class="suvat-substitution"></span>
+                <span class="suvat-result"></span>
+                <span class="suvat-square-root is-hidden"></span>
+              </article>
+            </div>
+          </div>
+        </dialog>
+
         <div class="scale-key" aria-hidden="true"><span></span>1 m</div>
         <div class="zoom-controls" aria-label="Zoom controls">
           <button id="zoom-out" type="button" aria-label="Zoom out"><span class="zoom-symbol">−</span></button>
@@ -163,12 +272,17 @@
           <label class="time-display" for="time-input">
             <i>t</i>
             <span>=</span>
-            <input id="time-input" type="text" inputmode="decimal" value="0.00" aria-label="Simulation time in seconds" />
+            <input id="time-input" type="text" inputmode="decimal" value="0" aria-label="Simulation time in seconds" />
             <span>s</span>
           </label>
           <button id="play-time" class="play-button" type="button" aria-label="Play">
             <svg class="playback-icon" viewBox="0 0 28 28" aria-hidden="true">
-              <path class="play-shape" d="M9 5l14 9-14 9z" />
+              <path
+                class="play-shape"
+                d="M10.8 5.5C9.8 4.9 9 5.5 9 6.7v14.6c0 1.2.8 1.8 1.8 1.2l11.3-7c1.6-1 1.6-2 0-3z"
+                transform="translate(-2 0)"
+              />
+              <path class="pause-outline-shape" d="M9 6v16M19 6v16" />
               <path class="pause-shape" d="M9 6v16M19 6v16" />
             </svg>
           </button>

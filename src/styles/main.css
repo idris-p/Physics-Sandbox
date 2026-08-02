@@ -130,6 +130,9 @@ button:disabled {
   border-radius: 14px;
   background: #f8f7f1;
   cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    transform 120ms ease;
 }
 
 .hotbar-slot::after {
@@ -167,7 +170,17 @@ button:disabled {
 }
 
 .hotbar-slot.is-active {
-  background: #242725;
+  border-color: #242725;
+  background: #78c98a;
+  transform: translateY(-3px);
+}
+
+.hotbar-slot.is-active:hover:not(:disabled) {
+  transform: translateY(-4px);
+}
+
+.hotbar-slot.is-active:active:not(:disabled) {
+  transform: translateY(-1px);
 }
 
 .hotbar-slot.is-dragging {
@@ -183,7 +196,7 @@ button:disabled {
 }
 
 .hotbar-slot.is-active .hotbar-particle {
-  border-color: #f8f7f1;
+  border-color: #242725;
 }
 
 .slot-key {
@@ -196,7 +209,7 @@ button:disabled {
 }
 
 .hotbar-slot.is-active .slot-key {
-  color: #d9d9d3;
+  color: #242725;
 }
 
 .delete-slot {
@@ -211,6 +224,10 @@ button:disabled {
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 2.2;
+}
+
+.delete-slot:hover:not(:disabled) {
+  background: #e89a8f;
 }
 
 .delete-slot.is-drop-target {
@@ -233,16 +250,27 @@ button:disabled {
   pointer-events: none;
 }
 
-.properties-stack {
+.scene-properties-position {
+  position: absolute;
+  z-index: 3;
+  top: 142px;
+  left: 18px;
+  width: 320px;
+}
+
+.context-properties-stack {
+  --context-properties-width: 390px;
+  --particle-scrollbar-width: 17px;
+
   position: absolute;
   z-index: 3;
   top: 18px;
   right: 18px;
+  bottom: 105px;
   display: flex;
-  width: 340px;
+  width: var(--context-properties-width);
   flex-direction: column;
   align-items: stretch;
-  gap: 12px;
 }
 
 .scene-properties,
@@ -264,7 +292,7 @@ button:disabled {
 }
 
 .scene-properties-shell.is-collapsed {
-  transform: translateX(calc(100% + 18px));
+  transform: translateX(calc(-100% - 18px));
 }
 
 .scene-properties-heading {
@@ -299,13 +327,13 @@ button:disabled {
 .collapse-properties {
   position: absolute;
   top: 18px;
-  left: -50px;
+  right: -50px;
   z-index: 1;
   width: 50px;
   height: 48px;
   border: 3px solid #242725;
-  border-right: 0;
-  border-radius: 14px 0 0 14px;
+  border-left: 0;
+  border-radius: 0 14px 14px 0;
   background: #f8f7f1;
   cursor: pointer;
 }
@@ -324,12 +352,12 @@ button:disabled {
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 3.5;
-  transform: rotate(0deg);
+  transform: rotate(180deg);
   transition: transform 160ms ease;
 }
 
 .scene-properties-shell.is-collapsed .chevron-icon {
-  transform: rotate(180deg);
+  transform: rotate(0deg);
 }
 
 .property-row {
@@ -392,41 +420,8 @@ button:disabled {
   outline-offset: 3px;
 }
 
-.ground-height-control {
-  display: grid;
-  width: 148px;
-  grid-template-columns: 20px 8px 72px 36px;
-  align-items: center;
-  justify-self: end;
-}
-
-.ground-height-control {
-  gap: 4px;
-  font-size: 22px;
-  font-weight: 700;
-}
-
-.ground-height-control.is-hidden {
-  visibility: hidden;
-  pointer-events: none;
-}
-
-.ground-height-field {
-  width: 62px;
-  height: 36px;
-}
-
-.ground-height-field input {
-  font-size: 23px;
-}
-
-.ground-height-field output {
-  display: grid;
-  width: 100%;
-  height: 100%;
-  place-items: center;
-  font-size: 23px;
-  font-variant-numeric: tabular-nums;
+.ground-property-row .toggle-control {
+  justify-self: center;
 }
 
 .gravity-row {
@@ -444,8 +439,7 @@ button:disabled {
   font-weight: 700;
 }
 
-.gravity-control i,
-.ground-height-control i {
+.gravity-control i {
   font-family: inherit;
   font-size: 27px;
 }
@@ -478,7 +472,7 @@ button:disabled {
   padding: 0 7px;
   border: 0;
   outline: 0;
-  background: transparent;
+  background: #fff;
   color: #242725;
   font-size: 23px;
   font-variant-numeric: tabular-nums;
@@ -500,7 +494,7 @@ button:disabled {
   position: absolute;
   top: calc(100% + 8px);
   right: 0;
-  width: 340px;
+  width: 100%;
   padding: 9px 11px;
   border: 3px solid #242725;
   border-radius: 11px;
@@ -544,14 +538,38 @@ button:disabled {
   display: none;
 }
 
+.particle-properties {
+  display: flex;
+  max-height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.particle-properties-scroll {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: #f8f7f1;
+  scrollbar-color: #777770 #dedbd3;
+  scrollbar-width: auto;
+}
+
+.particle-properties-content {
+  width: calc(var(--context-properties-width) - 6px);
+}
+
+.particle-properties > h2 {
+  flex: none;
+  border-bottom: 3px solid #242725;
+}
+
 .particle-property-row {
   display: grid;
   min-height: 112px;
   grid-template-columns: minmax(0, 1fr) 148px;
   align-items: start;
   gap: 8px;
-  padding: 12px 13px 14px;
-  border-top: 3px solid #242725;
+  padding: 12px calc(13px + var(--particle-scrollbar-width)) 14px 13px;
 }
 
 .particle-property-name {
@@ -590,7 +608,7 @@ button:disabled {
   padding: 0 5px;
   border: 3px solid #242725;
   border-radius: 9px;
-  background: #fff;
+  background: #dedbd3;
   font-size: 23px;
   font-variant-numeric: tabular-nums;
 }
@@ -601,7 +619,7 @@ button:disabled {
   grid-template-columns: minmax(0, 1fr) 148px;
   align-items: center;
   gap: 8px;
-  padding: 10px 13px;
+  padding: 10px calc(13px + var(--particle-scrollbar-width)) 10px 13px;
   border-top: 2px solid #242725;
 }
 
@@ -624,6 +642,46 @@ button:disabled {
 .scalar-property-control i {
   font-family: inherit;
   font-size: 27px;
+}
+
+.initial-velocity-row {
+  min-height: 72px;
+}
+
+.particle-pause-settings {
+  padding: 10px calc(13px + var(--particle-scrollbar-width)) 11px 13px;
+  border-top: 2px solid #242725;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.particle-pause-heading {
+  margin-bottom: 5px;
+}
+
+.particle-pause-option {
+  display: grid;
+  min-height: 48px;
+  grid-template-columns: minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 18px;
+  padding-left: 13px;
+  font-size: 20px;
+}
+
+.particle-pause-option .toggle-control {
+  justify-self: end;
+}
+
+.particle-pause-option[hidden] {
+  display: none;
+}
+
+.compact-unit {
+  font-size: 16px;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .property-number-field {
@@ -658,6 +716,495 @@ button:disabled {
 
 .property-number-field input[aria-invalid="true"] {
   color: #a03229;
+}
+
+.particle-analysis-toggle,
+.suvat-section h3 {
+  display: flex;
+  width: 100%;
+  min-height: 49px;
+  align-items: center;
+  margin: 0;
+  padding: 8px calc(13px + var(--particle-scrollbar-width)) 7px 13px;
+  border-top: 3px solid #242725;
+  border-bottom: 2px solid #242725;
+  background: #dedbd3;
+  font-size: 25px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.particle-analysis-toggle {
+  justify-content: space-between;
+  border-right: 0;
+  border-left: 0;
+  cursor: pointer;
+  color: #242725;
+  text-align: left;
+}
+
+.particle-analysis-toggle:hover {
+  background: #d2cfc7;
+}
+
+.particle-analysis-toggle:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 3px solid #5e766e;
+  outline-offset: -3px;
+}
+
+.analysis-chevron {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3;
+  transform: rotate(90deg);
+  transition: transform 120ms ease;
+}
+
+.particle-analysis-toggle[aria-expanded="true"] .analysis-chevron {
+  transform: rotate(-90deg);
+}
+
+.particle-analysis-toggle[aria-expanded="false"] {
+  border-bottom: 0;
+}
+
+.particle-analysis-content[hidden] {
+  display: none;
+}
+
+.suvat-section h3 {
+  border-top-width: 2px;
+}
+
+.positive-direction-row {
+  display: grid;
+  min-height: 62px;
+  grid-template-columns: minmax(0, 1fr) 148px;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 13px;
+  font-size: 21px;
+  font-weight: 700;
+}
+
+.scene-positive-direction-row {
+  grid-template-columns: minmax(0, 1fr) 96px;
+  border-top: 2px solid #242725;
+  font-size: 24px;
+}
+
+.scene-positive-direction-row .direction-selector {
+  width: 96px;
+  justify-self: end;
+}
+
+.direction-selector {
+  display: grid;
+  width: 148px;
+  height: 40px;
+  grid-template-columns: 1fr 1fr;
+  overflow: hidden;
+  border: 3px solid #242725;
+  border-radius: 9px;
+  background: #dedbd3;
+}
+
+.direction-selector button {
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.direction-selector svg {
+  width: 25px;
+  height: 25px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.8;
+}
+
+.direction-selector button + button {
+  border-left: 3px solid #242725;
+}
+
+.direction-selector button.is-active {
+  background: #78c98a;
+  color: #242725;
+}
+
+.kinematic-values {
+  display: grid;
+  margin: 0;
+  padding: 4px calc(13px + var(--particle-scrollbar-width)) 10px 13px;
+}
+
+.kinematic-values > div {
+  display: grid;
+  min-height: 56px;
+  grid-template-columns: 34px 182px;
+  align-items: center;
+  justify-content: center;
+  column-gap: 18px;
+}
+
+.kinematic-values > div + div {
+  border-top: 1px solid #aaa79f;
+}
+
+.kinematic-values dt,
+.kinematic-values dd {
+  margin: 0;
+}
+
+.kinematic-values dt {
+  display: grid;
+  place-items: center;
+  font-size: 25px;
+  font-weight: 700;
+}
+
+.kinematic-values dd {
+  display: grid;
+  grid-template-columns: 84px 90px;
+  align-items: center;
+  gap: 8px;
+  font-size: 17px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.kinematic-values output {
+  display: grid;
+  height: 48px;
+  place-items: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0 3px;
+  border: 3px solid #242725;
+  border-radius: 9px;
+  background: #dedbd3;
+  font-size: 21px;
+  font-variant-numeric: tabular-nums;
+  scrollbar-width: none;
+}
+
+.kinematic-values output::-webkit-scrollbar {
+  display: none;
+}
+
+.kinematic-values output .suvat-math {
+  font-size: 0.9em;
+}
+
+.kinematic-values output.is-long-value .suvat-math {
+  font-size: 0.65em;
+}
+
+.kinematic-values output.has-square-root {
+  align-content: center;
+}
+
+.kinematic-values output.has-square-root .suvat-math {
+  font-size: 0.68em;
+}
+
+.suvat-invalid {
+  margin: 12px calc(13px + var(--particle-scrollbar-width)) 14px 13px;
+  padding: 10px 11px;
+  border: 3px solid #242725;
+  border-radius: 10px;
+  background: #f1d49a;
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.suvat-invalid.is-hidden,
+.suvat-equations.is-hidden {
+  display: none;
+}
+
+.suvat-equation {
+  display: grid;
+  gap: 4px;
+  padding: 10px calc(13px + var(--particle-scrollbar-width)) 11px 13px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  transition: background-color 120ms ease;
+}
+
+.suvat-equation:hover {
+  background: #eeece5;
+}
+
+.suvat-equation:focus-visible {
+  outline: 3px solid #5e766e;
+  outline-offset: -5px;
+}
+
+.suvat-equation + .suvat-equation {
+  border-top: 2px solid #242725;
+}
+
+.suvat-formula {
+  display: flex;
+  min-height: 2.2em;
+  align-items: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.3em 0 0.38em;
+  font-size: 22px;
+  scrollbar-width: none;
+}
+
+.suvat-substitution,
+.suvat-result,
+.suvat-square-root {
+  padding-left: 14px;
+  font-size: 18px;
+  line-height: 1.15;
+}
+
+.suvat-substitution {
+  display: flex;
+  min-height: 2.25em;
+  align-items: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-top: 0.32em;
+  padding-bottom: 0.4em;
+  scrollbar-width: none;
+}
+
+.suvat-result,
+.suvat-square-root {
+  display: grid;
+  gap: 5px;
+}
+
+.suvat-math-line {
+  display: flex;
+  min-height: 2.25em;
+  min-width: 0;
+  align-items: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.32em 0 0.4em;
+  scrollbar-width: none;
+}
+
+.suvat-formula::-webkit-scrollbar,
+.suvat-substitution::-webkit-scrollbar,
+.suvat-math-line::-webkit-scrollbar {
+  display: none;
+}
+
+.suvat-math {
+  color: #242725;
+  font-family: "Cambria Math", "STIX Two Math", "Latin Modern Math", serif;
+  font-size: 1em;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.suvat-math mi,
+.suvat-math mn,
+.suvat-math mo,
+.suvat-math mtext {
+  font-family:
+    "KG Primary Penmanship Alt", "Cambria Math", "STIX Two Math", serif;
+  font-weight: 700;
+}
+
+.suvat-formula .suvat-math {
+  font-size: 1.08em;
+}
+
+.suvat-math mfrac {
+  padding-inline: 0.06em;
+}
+
+.suvat-square-root {
+  margin-top: 3px;
+  padding-top: 5px;
+  border-top: 1px solid #aaa79f;
+}
+
+.suvat-square-root.is-hidden {
+  display: none;
+}
+
+.suvat-calculation-dialog {
+  width: min(1100px, calc(100vw - 64px));
+  height: min(760px, calc(100vh - 64px));
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  overflow: hidden;
+  border: 4px solid #242725;
+  border-radius: 20px;
+  background: #f8f7f1;
+  color: #242725;
+  box-shadow: none;
+}
+
+.suvat-calculation-dialog::backdrop {
+  background: rgb(36 39 37 / 28%);
+}
+
+.suvat-calculation-dialog-shell {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+}
+
+.suvat-calculation-dialog-header {
+  display: flex;
+  min-height: 76px;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px 10px 24px;
+  border-bottom: 4px solid #242725;
+  background: #dedbd3;
+}
+
+.suvat-calculation-dialog-header h2 {
+  margin: 0;
+  font-size: 34px;
+  font-weight: 800;
+}
+
+.suvat-calculation-dialog-header button {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  flex: none;
+  place-items: center;
+  border: 3px solid #242725;
+  border-radius: 13px;
+  background: #f8f7f1;
+  color: #242725;
+  cursor: pointer;
+}
+
+.suvat-calculation-dialog-header button:hover {
+  background: #e89a8f;
+}
+
+.suvat-calculation-dialog-header button:focus-visible {
+  outline: 3px solid #5e766e;
+  outline-offset: 2px;
+}
+
+.suvat-calculation-dialog-header svg {
+  width: 31px;
+  height: 31px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 3;
+}
+
+.suvat-calculation-dialog-content {
+  display: grid;
+  min-height: 0;
+  flex: 1;
+  align-items: center;
+  overflow: auto;
+  padding: clamp(22px, 3vh, 36px) clamp(32px, 6vw, 76px);
+  scrollbar-color: #777770 #dedbd3;
+}
+
+.suvat-modal-equation {
+  display: grid;
+  width: 100%;
+  max-width: 920px;
+  justify-self: center;
+  gap: clamp(8px, 1.2vh, 14px);
+  font-variant-numeric: tabular-nums;
+}
+
+.suvat-modal-equation .suvat-formula {
+  min-height: 1.7em;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-top: 0.14em;
+  padding-bottom: 0.2em;
+  font-size: clamp(38px, 5vw, 58px);
+  scrollbar-width: none;
+}
+
+.suvat-modal-equation .suvat-substitution,
+.suvat-modal-equation .suvat-result,
+.suvat-modal-equation .suvat-square-root {
+  padding-left: clamp(24px, 5vw, 72px);
+  font-size: clamp(29px, 3.7vw, 44px);
+  line-height: 1.25;
+}
+
+.suvat-modal-equation .suvat-substitution {
+  display: flex;
+  min-height: 1.7em;
+  align-items: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-top: 0.14em;
+  padding-bottom: 0.2em;
+  scrollbar-width: none;
+}
+
+.suvat-modal-equation .suvat-result,
+.suvat-modal-equation .suvat-square-root {
+  display: grid;
+  gap: 12px;
+}
+
+.suvat-modal-equation .suvat-square-root {
+  margin-top: 4px;
+  padding-top: 18px;
+  border-top: 2px solid #aaa79f;
+}
+
+.suvat-modal-equation .suvat-square-root.is-hidden {
+  display: none;
+}
+
+.suvat-modal-equation .suvat-math-line {
+  min-height: 1.7em;
+  align-items: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.14em 0 0.2em;
+  scrollbar-width: thin;
+}
+
+.suvat-modal-equation .suvat-formula::-webkit-scrollbar,
+.suvat-modal-equation .suvat-substitution::-webkit-scrollbar {
+  display: none;
+}
+
+@media (max-width: 700px), (max-height: 600px) {
+  .suvat-calculation-dialog {
+    width: calc(100vw - 28px);
+    height: calc(100vh - 28px);
+  }
+
+  .suvat-calculation-dialog-content {
+    align-items: start;
+    padding: 28px 22px;
+  }
 }
 
 .ground-rough-row {
@@ -830,10 +1377,6 @@ button:disabled {
   align-items: center;
   justify-content: center;
   gap: 5px;
-  padding: 8px 13px;
-  border: 3px solid #242725;
-  border-radius: 11px;
-  background: #ffffff;
   font-variant-numeric: tabular-nums;
   font-size: 28px;
   font-weight: 800;
@@ -842,10 +1385,11 @@ button:disabled {
 
 .time-display input {
   width: 76px;
-  padding: 0;
-  border: 0;
-  outline: 0;
-  background: transparent;
+  height: 56px;
+  padding: 0 6px;
+  border: 3px solid #242725;
+  border-radius: 11px;
+  background: #ffffff;
   color: #242725;
   font: inherit;
   font-variant-numeric: tabular-nums;
@@ -872,18 +1416,28 @@ button:disabled {
 }
 
 .play-shape {
-  fill: #3e9a57;
-  stroke: #3e9a57;
+  fill: #78c98a;
+  stroke: #242725;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 2.5;
+  stroke-width: 1.75;
 }
 
+.pause-outline-shape,
 .pause-shape {
   display: none;
   fill: none;
-  stroke: #d34a3f;
   stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.pause-outline-shape {
+  stroke: #242725;
+  stroke-width: 7.5;
+}
+
+.pause-shape {
+  stroke: #e89a8f;
   stroke-width: 4.5;
 }
 
@@ -892,13 +1446,15 @@ button:disabled {
   display: none;
 }
 
+.play-button.is-playing .pause-outline-shape,
 .play-button.is-playing .pause-shape,
+.play-button.is-pause-pending .pause-outline-shape,
 .play-button.is-pause-pending .pause-shape {
   display: block;
 }
 
 .play-button.is-pause-pending .pause-shape {
-  stroke: #d6a82e;
+  stroke: #f1d49a;
 }
 
 .step-control {
@@ -935,8 +1491,18 @@ button:disabled {
 }
 
 @media (max-width: 960px) {
+  .context-properties-stack {
+    bottom: 170px;
+  }
+
   .time-controls {
     bottom: 74px;
+  }
+}
+
+@media (max-width: 800px) {
+  .context-properties-stack {
+    --context-properties-width: 340px;
   }
 }
 
