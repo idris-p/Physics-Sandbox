@@ -154,11 +154,11 @@
           <div class="particle-pause-settings">
             <div class="particle-pause-heading">Pause scene at:</div>
             <div class="particle-pause-option">
-              <span>Maximum height</span>
-              <label class="toggle-control" for="particle-pause-at-maximum-toggle">
-                <input id="particle-pause-at-maximum-toggle" type="checkbox" />
+              <span>Greatest height</span>
+              <label class="toggle-control" for="particle-pause-at-greatest-toggle">
+                <input id="particle-pause-at-greatest-toggle" type="checkbox" />
                 <span class="toggle-track" aria-hidden="true"><span></span></span>
-                <span class="visually-hidden">Pause scene at this particle's maximum height</span>
+                <span class="visually-hidden">Pause scene at this particle's greatest height</span>
               </label>
             </div>
             <div id="particle-pause-at-ground-row" class="particle-pause-option">
@@ -185,6 +185,7 @@
               </svg>
             </button>
             <div id="particle-analysis-content" class="particle-analysis-content" hidden>
+              <p id="kinematic-phase-note" class="phase-interval-note is-hidden"></p>
               <dl class="kinematic-values">
                 <div><dt><i>s</i></dt><dd><output id="kinematic-s">0</output><span>m</span></dd></div>
                 <div><dt><i>u</i></dt><dd><output id="kinematic-u">0</output><span>m s<sup>−1</sup></span></dd></div>
@@ -195,7 +196,6 @@
 
               <section class="suvat-section" aria-labelledby="suvat-title">
                 <h3 id="suvat-title">SUVAT</h3>
-                <p id="suvat-invalid-reason" class="suvat-invalid is-hidden"></p>
                 <div id="suvat-equations" class="suvat-equations"></div>
               </section>
             </div>
@@ -269,12 +269,14 @@
               <path d="M14 4L6 12l8 8M26 4l-8 8 8 8" />
             </svg>
           </button>
-          <label class="time-display" for="time-input">
-            <i>t</i>
-            <span>=</span>
-            <input id="time-input" type="text" inputmode="decimal" value="0" aria-label="Simulation time in seconds" />
+          <div class="time-display">
+            <label for="time-input"><i>t</i> <span>=</span></label>
+            <span class="time-number-field">
+              <input id="time-input" type="text" inputmode="decimal" value="0" aria-label="Simulation time in seconds" />
+              <button id="time-exact-value" class="time-exact-value is-hidden" type="button" aria-label="Edit exact simulation time"></button>
+            </span>
             <span>s</span>
-          </label>
+          </div>
           <button id="play-time" class="play-button" type="button" aria-label="Play">
             <svg class="playback-icon" viewBox="0 0 28 28" aria-hidden="true">
               <path

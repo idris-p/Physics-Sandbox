@@ -15,7 +15,7 @@ This phase extended that foundation with:
 - exact decimal, fraction, and surd-aware mathematical presentation;
 - enlarged calculation views;
 - initial-velocity diagram annotations;
-- exact pause events at maximum height and ground contact;
+- exact pause events at greatest height and ground contact;
 - selection and properties-panel refinements;
 - timer and playback synchronization improvements.
 
@@ -34,7 +34,7 @@ A user can:
 5. expand a SUVAT section containing numerical substitutions and answers;
 6. open any SUVAT calculation in a large modal;
 7. retain exact entered decimals while seeing appropriate generated fractions and surds;
-8. play the scene and pause exactly at a selected particle's maximum height or ground contact.
+8. play the scene and pause exactly at a selected particle's greatest height or ground contact.
 
 World mechanics and educational presentation remain separate. Changing the displayed positive direction never changes the particle's real trajectory.
 
@@ -83,7 +83,7 @@ Each persistent particle now stores:
 interface Particle {
   id: string;
   mass: number;
-  pauseAtMaximumHeight: boolean;
+  pauseAtGreatestHeight: boolean;
   pauseAtGroundContact: boolean;
   initialPosition: Vec2;
   initialVelocity: Vec2;
@@ -99,7 +99,7 @@ New particles default to:
 ```text
 mass = 1 kg
 initial velocity = 0 m s^-1
-pause at maximum height = off
+pause at greatest height = off
 pause at ground contact = off
 ```
 
@@ -182,13 +182,15 @@ interface VerticalKinematicState {
 }
 ```
 
-The quantities are defined as:
+Before deriving these values, `determineActiveKinematicPhase` selects the current interval of constant acceleration. A phase stores its start time, starting position, starting velocity, and constant acceleration. The current implementation has only free-flight and grounded phases.
 
-- `s`: current world-y position minus initial world-y position, converted to the selected sign convention;
-- `u`: persistent initial world-y velocity, converted to the selected sign convention;
+The quantities are defined relative to that phase:
+
+- `s`: current world-y position minus phase-start world-y position, converted to the selected sign convention;
+- `u`: phase-start world-y velocity, converted to the selected sign convention;
 - `v`: current calculated world-y velocity, converted to the selected sign convention;
-- `a`: current calculated world-y acceleration, converted to the selected sign convention;
-- `t`: the one global scene time.
+- `a`: phase acceleration, converted to the selected sign convention;
+- `t`: global scene time minus phase start time.
 
 Displacement is not distance travelled. A particle that rises and then returns to its starting height has `s = 0`.
 
@@ -271,19 +273,22 @@ For a valid interval, each card shows:
 
 This is a fixed, fully known numerical analysis. It does not rearrange equations, solve arbitrary unknowns, parse user algebra, or use a computer algebra system.
 
-## 10. Constant-acceleration validity
+## 10. Phase-aware constant-acceleration analysis
 
-SUVAT is shown only when acceleration remained constant over the complete interval from `t = 0` to the current scene time.
+SUVAT now analyses the active constant-acceleration phase rather than the complete scene history.
 
-Current rules:
+Current phase rules:
 
-- ground disabled: valid constant gravitational acceleration;
-- before first ground contact: valid free fall;
-- exactly at a positive first-contact time: valid as the end of the free-fall phase;
-- initially resting on ground: valid constant zero acceleration;
-- after a positive-time impact: invalid because the interval contains both free fall and rest.
+- ground disabled: free flight begins at scene `t = 0` with acceleration `-g`;
+- before first ground contact: the active phase is free flight from `t = 0`;
+- exactly at a positive first-contact time: the active phase is still free flight;
+- after positive-time contact: the active grounded phase begins at the exact impact time;
+- initially resting on ground: the grounded phase begins at `t = 0`;
+- an upward launch from ground stays in free flight through the exact return contact and becomes grounded only afterward.
 
-When invalid, the equation cards are replaced by a concise pencil-amber disclaimer. The application does not pretend one constant acceleration describes the complete interval and does not attempt a premature multi-phase derivation.
+For a grounded phase, Kinematics and all five SUVAT equations use `s = 0`, `u = 0`, `v = 0`, `a = 0`, and phase-relative elapsed time. An earlier acceleration change no longer invalidates later analysis.
+
+When a phase starts after scene `t = 0`, one pencil-yellow note appears above the Kinematics values. Its three lines identify the acceleration-change time, global interval endpoints, and subtraction producing phase elapsed time. The notice is not repeated inside SUVAT. No invalid-SUVAT warning is shown.
 
 The ground-impact state was refined for this teaching boundary:
 
@@ -292,7 +297,7 @@ The ground-impact state was refined for this teaching boundary:
 - only times after contact use `v = 0` and `a = 0`;
 - a particle launched upward from the ground is treated as free moving until it returns.
 
-The rendered particle radius remains irrelevant to all contact and validity calculations.
+The rendered particle radius remains irrelevant to all contact and phase calculations.
 
 ## 11. Exact numerical provenance
 
@@ -481,6 +486,20 @@ The arrow is absent only when initial velocity equals zero. It disappears for ev
 
 Velocity annotations render before particles, so the particle fill and outline remain visually above the arrow at their overlap. The ordinary visual ground offset is used for presentation only and does not trigger any mechanics recalculation.
 
+### Greatest-height measurement
+
+When playback pauses directly because one or more particles reach their enabled greatest-height event, each triggering particle receives a vertical dimension annotation to enabled ground.
+
+The measurement uses only mathematical geometry:
+
+```text
+greatest height = particle position.y - ground height
+```
+
+The vertical dashed double-headed dimension line is positioned `0.75 m` to the right of the particle centre. Its top perpendicular witness line begins at the particle's visual edge, reaches the arrow, and continues the same distance beyond it; the lower perpendicular end mark uses the same total span at mathematical ground. Its label uses the existing generated exact-value formatter. Exact fractions are drawn vertically with a fraction bar, while exact surds use a stretched radical and vinculum rather than plain slash or square-root text. Panning and zooming transform both endpoints through the camera.
+
+The annotation is backed by an explicit pause-event record rather than a time coincidence. It is absent during ordinary playback and manual navigation, cleared when playback resumes, hidden when time changes, and omitted if ground or the triggering particle is no longer available. Simultaneous earliest greatest-height events may display multiple measurements.
+
 ## 18. Selection presentation
 
 The older blue dashed particle ring and blue ground line were removed.
@@ -504,7 +523,7 @@ Particle Properties contains one grouped setting:
 
 ```text
 Pause scene at:
-  Maximum height       [toggle]
+  Greatest height      [toggle]
   Ground contact       [toggle]
 ```
 
@@ -512,7 +531,7 @@ Each toggle is stored independently per particle.
 
 When ground is disabled, the Ground contact option is removed from the visible group. Its saved per-particle setting is retained and becomes visible again if ground is re-enabled. Ground-contact pause logic remains inactive while ground is disabled.
 
-### Maximum height
+### Greatest height
 
 For a particle with positive world-y initial velocity and positive gravity:
 
@@ -521,6 +540,8 @@ t_max = initialVelocity.y / g
 ```
 
 Playback clamps exactly to that time. The event excludes `t = 0`, stationary particles, downward launches, and cases with no downward acceleration.
+
+The playback helper returns both the event time and all particle IDs sharing that earliest time. If this event is the pause target reached by playback, that record drives the greatest-height measurement annotation. Merely entering or stepping to the same numerical time does not create a record.
 
 ### Ground contact
 
@@ -537,7 +558,7 @@ The event excludes:
 The earliest upcoming target wins across:
 
 - the user's pending next-integer pause;
-- maximum-height pause targets;
+- greatest-height pause targets;
 - ground-contact pause targets;
 - every particle in the scene.
 
@@ -560,6 +581,8 @@ Generated time:
 - is shown to exactly two decimal places while actively playing;
 - returns to its full available precision when playback stops;
 - uses normalized arithmetic for manual `1`, `0.1`, and `0.01` steps.
+
+When an analytical greatest-height or ground-contact event pauses the scene at an exact fractional or surd time, the timer temporarily renders that exact value with MathML. This includes compound quadratic surds for ground contact with non-zero initial velocity. Clicking the exact value restores the full decimal representation in the editable time input.
 
 The timer's visual equation is now:
 
@@ -612,7 +635,7 @@ All editable property fields use white. Read-only fields use title-grey.
 
 The Positive direction label matches Gravity in size. Its arrow buttons are compact rather than word-width controls.
 
-The pause settings were consolidated into a single hierarchy instead of two unrelated full-width rows. If ground is unavailable, only Maximum height is listed.
+The pause settings were consolidated into a single hierarchy instead of two unrelated full-width rows. If ground is unavailable, only Greatest height is listed.
 
 ## 23. Main state and update flow
 
@@ -628,6 +651,7 @@ The pause settings were consolidated into a single hierarchy instead of two unre
 - preserved manual time text;
 - playback state;
 - pending integer pause time;
+- the most recent triggering greatest-height pause event;
 - next particle ID.
 
 The playback frame flow is:
@@ -639,7 +663,9 @@ requestAnimationFrame timestamp
         +-- choose the earliest target
         +-- advance or clamp global scene time
         +-- reconstruct every particle analytically
+        +-- determine each selected particle's active kinematic phase
         +-- refresh selected-particle analysis, including the final pause frame
+        +-- derive any active greatest-height measurements
         +-- render annotations, particles, ground, and selection
 ```
 
@@ -649,9 +675,9 @@ Property changes, time changes, and selection changes flow through explicit cont
 
 ## 24. Tests added and extended
 
-The repository currently defines 119 automated tests across 13 files.
+The repository currently defines 139 automated tests across 16 files.
 
-### Exact display — 13 tests
+### Exact display — 14 tests
 
 Coverage includes:
 
@@ -665,7 +691,7 @@ Coverage includes:
 - signed decimal text negation;
 - square-root display behavior.
 
-### SUVAT and interval validity — 12 tests
+### SUVAT and phase behavior — 12 tests
 
 Coverage includes:
 
@@ -674,10 +700,14 @@ Coverage includes:
 - entered `0.333` remaining a decimal;
 - generated fractions reused in later working;
 - exact `v^2` and signed-root working;
-- validity before and exactly at impact;
-- invalidity after impact;
+- free-flight analysis before and exactly at impact;
+- grounded phase-relative analysis after impact;
 - initially resting ground state;
 - upward launch from ground.
+
+### Kinematic phase selection — 6 tests
+
+Coverage includes free flight, exact impact, post-impact grounding, initially grounded particles, upward launch from ground, and sign-convention invariance.
 
 ### Sign convention — 3 tests
 
@@ -691,13 +721,18 @@ Coverage includes known `s`, `u`, `v`, `a`, and `t`, sign-convention invariance,
 
 Coverage includes default zero velocity, upward-positive edits, downward-positive conversion, preserved input text, and non-mutation.
 
-### Playback — 8 tests
+### Playback — 10 tests
 
-Coverage includes next-integer scheduling, exact clamping, maximum-height targets, target arbitration, exact ground-contact targets, disabled-ground behavior, and `t = 0` exclusions.
+Coverage includes next-integer scheduling, exact clamping, greatest-height targets, simultaneous triggering particle IDs, target arbitration, exact ground-contact targets and triggering particle IDs, disabled-ground behavior, and `t = 0` exclusions.
+
+### Exact auto-pause time display — 5 tests
+
+Coverage includes fractional greatest-height times, terminating-decimal fallbacks, pure surd ground-contact times, simplified rational impact times, and compound quadratic surds with non-zero initial velocity.
 
 ### Canvas presentation
 
 - initial-velocity annotations: 4 tests;
+- greatest-height measurement, geometry, exact labels, and visibility: 6 tests;
 - selection colour pulse: 2 tests;
 - particle geometry/grouping: 4 tests;
 - camera behavior: 4 tests.
@@ -717,10 +752,8 @@ As of 3 August 2026:
 
 - TypeScript strict checking passes through the production build;
 - Vite production build passes;
-- relevant playback and UI tests pass: 56/56;
+- all 139 tests across 16 files pass;
 - `git diff --check` reports no whitespace errors.
-
-The latest complete test run reports 118/119 passing. The one remaining failure is a stale wording assertion in `src/kinematics/suvat.test.ts`: the test expects the phrase `acceleration changed`, while the current disclaimer says acceleration “was not kept constant.” The calculation and validity result are correct; the assertion text and displayed copy need to be reconciled.
 
 ## 26. Intentional deviations from the phase brief
 

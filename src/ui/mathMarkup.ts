@@ -154,6 +154,40 @@ export function createSquareRootValue(
   return math;
 }
 
+export function createQuadraticSurdValue(
+  linearTerm: string,
+  radicand: string,
+  denominator: string,
+): Element {
+  const math = createMathElement("math");
+  math.setAttribute("class", "suvat-math");
+  math.setAttribute(
+    "aria-label",
+    `${linearTerm} plus the square root of ${radicand}, divided by ${denominator}`,
+  );
+
+  const numerator = createMathElement("mrow");
+  const squareRoot = createMathElement("msqrt");
+  squareRoot.append(...createMathNodes(radicand));
+  numerator.append(
+    ...createMathNodes(linearTerm),
+    createMathElementWithText("mo", "+"),
+    squareRoot,
+  );
+
+  if (denominator === "1") {
+    math.append(numerator);
+    return math;
+  }
+
+  const fraction = createMathElement("mfrac");
+  const denominatorRow = createMathElement("mrow");
+  denominatorRow.append(...createMathNodes(denominator));
+  fraction.append(numerator, denominatorRow);
+  math.append(fraction);
+  return math;
+}
+
 function createMathNodes(text: string): Element[] {
   return tokenizeMathText(text).map(createTokenNode);
 }

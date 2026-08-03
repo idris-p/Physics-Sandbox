@@ -73,6 +73,17 @@ export function multiplyRationals(left: Rational, right: Rational): Rational {
   );
 }
 
+export function divideRationals(left: Rational, right: Rational): Rational {
+  if (right.numerator === 0n) {
+    throw new Error("Cannot divide a rational by zero.");
+  }
+
+  return normaliseRational(
+    left.numerator * right.denominator,
+    left.denominator * right.numerator,
+  );
+}
+
 export function squareRational(value: Rational): Rational {
   return normaliseRational(
     value.numerator * value.numerator,

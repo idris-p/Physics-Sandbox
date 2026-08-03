@@ -2,30 +2,37 @@ import { PIXELS_PER_METRE } from "../config";
 import type { Tool } from "../canvas/interaction";
 import type { VerticalPositiveDirection } from "../kinematics/signConvention";
 import {
-  type ConstantAccelerationInterval,
   type KinematicDisplayValues,
   type SuvatEquationResult,
 } from "../kinematics/suvat";
 import type { Vec2 } from "../math/Vec2";
+import type { AutoPauseTimeDisplay } from "../simulation/autoPauseTimeDisplay";
 import {
   createMathExpression,
   createMathResult,
+  createQuadraticSurdValue,
   createSquareRootExpression,
   createSquareRootValue,
 } from "./mathMarkup";
 
 export type PlaybackButtonState = "paused" | "playing" | "pause-pending";
+export interface PhaseIntervalNote {
+  startTime: string;
+  endTime: string;
+  phaseTime: string;
+}
+
 export type SelectionProperties =
   | {
       type: "particle";
       position: Vec2;
       mass: number;
       initialVelocityText: string;
-      pauseAtMaximumHeight: boolean;
+      pauseAtGreatestHeight: boolean;
       pauseAtGroundContact: boolean;
       groundEnabled: boolean;
+      phaseNote: PhaseIntervalNote | null;
       kinematics: KinematicDisplayValues;
-      suvatInterval: ConstantAccelerationInterval;
       suvatEquations: SuvatEquationResult[];
     }
   | { type: "ground"; rough: boolean; friction: number }
@@ -38,7 +45,7 @@ export interface ControlCallbacks {
   onGravityChange: (gravity: number, enteredText: string) => void;
   onParticleMassChange: (mass: number) => void;
   onParticleInitialVelocityChange: (velocity: number, enteredText: string) => void;
-  onParticlePauseAtMaximumHeightChange: (enabled: boolean) => void;
+  onParticlePauseAtGreatestHeightChange: (enabled: boolean) => void;
   onParticlePauseAtGroundContactChange: (enabled: boolean) => void;
   onPositiveDirectionChange: (direction: VerticalPositiveDirection) => void;
   onGroundFrictionChange: (coefficient: number) => void;
@@ -61,7 +68,11 @@ export interface Controls {
   setSelected: (hasSelection: boolean) => void;
   setSelectionProperties: (selection: SelectionProperties) => void;
   setPositiveDirection: (direction: VerticalPositiveDirection) => void;
-  setTime: (time: number, enteredText?: string) => void;
+  setTime: (
+    time: number,
+    enteredText?: string,
+    exactDisplay?: AutoPauseTimeDisplay | null,
+  ) => void;
   setPlaybackState: (state: PlaybackButtonState) => void;
   setZoom: (pixelsPerMetre: number) => void;
 }
@@ -90,8 +101,8 @@ export function createControls(callbacks: ControlCallbacks): Controls {
   const particleInitialVelocityInput = getElement<HTMLInputElement>(
     "particle-initial-velocity-input",
   );
-  const particlePauseAtMaximumToggle = getElement<HTMLInputElement>(
-    "particle-pause-at-maximum-toggle",
+  const particlePauseAtGreatestToggle = getElement<HTMLInputElement>(
+    "particle-pause-at-greatest-toggle",
   );
   const particlePauseAtGroundToggle = getElement<HTMLInputElement>(
     "particle-pause-at-ground-toggle",
@@ -108,7 +119,7 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     a: getElement<HTMLOutputElement>("kinematic-a"),
     t: getElement<HTMLOutputElement>("kinematic-t"),
   };
-  const suvatInvalidReason = getElement<HTMLElement>("suvat-invalid-reason");
+  const kinematicPhaseNote = getElement<HTMLElement>("kinematic-phase-note");
   const suvatEquations = getElement<HTMLElement>("suvat-equations");
   const suvatCalculationDialog = getElement<HTMLDialogElement>(
     "suvat-calculation-dialog",
@@ -130,6 +141,7 @@ export function createControls(callbacks: ControlCallbacks): Controls {
   const playTime = getElement<HTMLButtonElement>("play-time");
   const resetTime = getElement<HTMLButtonElement>("reset-time");
   const timeInput = getElement<HTMLInputElement>("time-input");
+  const timeExactValue = getElement<HTMLButtonElement>("time-exact-value");
   const stepInterval = getElement<HTMLSelectElement>("step-interval");
   const zoomOut = getElement<HTMLButtonElement>("zoom-out");
   const zoomIn = getElement<HTMLButtonElement>("zoom-in");
@@ -149,6 +161,10 @@ export function createControls(callbacks: ControlCallbacks): Controls {
 
   let currentGravityText = gravityInput.value;
   let currentTimeText = timeInput.value;
+  let currentDisplayedTime = 0;
+  let lastExactTimeDisplay: AutoPauseTimeDisplay | null = null;
+  let exactTimeDisplaySuppressed = false;
+  let isEditingExactTime = false;
   let currentParticleMass = Number(particleMassInput.value);
   let currentParticleInitialVelocityText = particleInitialVelocityInput.value;
   let currentGroundFriction = Number(groundFrictionInput.value);
@@ -311,9 +327,9 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     callbacks.onParticleInitialVelocityChange(result, enteredText);
   });
 
-  particlePauseAtMaximumToggle.addEventListener("change", () => {
-    callbacks.onParticlePauseAtMaximumHeightChange(
-      particlePauseAtMaximumToggle.checked,
+  particlePauseAtGreatestToggle.addEventListener("change", () => {
+    callbacks.onParticlePauseAtGreatestHeightChange(
+      particlePauseAtGreatestToggle.checked,
     );
   });
 
@@ -361,11 +377,13 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     const enteredText = timeInput.value.trim();
     const result = parseTime(timeInput.value);
     if (result === null) {
+      isEditingExactTime = false;
       timeInput.value = currentTimeText;
       timeInput.setAttribute("aria-invalid", "true");
       return;
     }
 
+    isEditingExactTime = false;
     currentTimeText = enteredText;
     timeInput.value = enteredText;
     timeInput.removeAttribute("aria-invalid");
@@ -374,6 +392,26 @@ export function createControls(callbacks: ControlCallbacks): Controls {
 
   timeInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") timeInput.blur();
+  });
+
+  timeInput.addEventListener("blur", () => {
+    if (!isEditingExactTime || lastExactTimeDisplay === null) return;
+
+    isEditingExactTime = false;
+    exactTimeDisplaySuppressed = false;
+    timeInput.classList.add("is-hidden");
+    timeExactValue.classList.remove("is-hidden");
+  });
+
+  timeExactValue.addEventListener("click", () => {
+    isEditingExactTime = true;
+    exactTimeDisplaySuppressed = true;
+    timeExactValue.classList.add("is-hidden");
+    timeInput.classList.remove("is-hidden");
+    currentTimeText = formatTime(currentDisplayedTime);
+    timeInput.value = currentTimeText;
+    timeInput.focus();
+    timeInput.select();
   });
 
   toggleSceneProperties.addEventListener("click", () => {
@@ -427,14 +465,13 @@ export function createControls(callbacks: ControlCallbacks): Controls {
           particleInitialVelocityInput.value = selection.initialVelocityText;
         }
         particleInitialVelocityInput.removeAttribute("aria-invalid");
-        particlePauseAtMaximumToggle.checked = selection.pauseAtMaximumHeight;
+        particlePauseAtGreatestToggle.checked = selection.pauseAtGreatestHeight;
         particlePauseAtGroundToggle.checked = selection.pauseAtGroundContact;
         particlePauseAtGroundRow.hidden = !selection.groundEnabled;
+        setPhaseIntervalNote(kinematicPhaseNote, selection.phaseNote);
         setKinematicOutputs(kinematicOutputs, selection.kinematics);
         setSuvatAnalysis(
-          suvatInvalidReason,
           suvatEquations,
-          selection.suvatInterval,
           selection.suvatEquations,
         );
         refreshExpandedSuvatEquation();
@@ -459,9 +496,26 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     setPositiveDirection: (direction) => {
       updatePositiveDirectionButtons(direction, positiveUp, positiveDown);
     },
-    setTime: (time, enteredText) => {
+    setTime: (time, enteredText, exactDisplay = null) => {
+      currentDisplayedTime = time;
       currentTimeText = enteredText ?? formatTime(time);
-      if (document.activeElement !== timeInput) timeInput.value = currentTimeText;
+      if (lastExactTimeDisplay !== exactDisplay) {
+        exactTimeDisplaySuppressed = false;
+        lastExactTimeDisplay = exactDisplay;
+      }
+
+      const showExactTime =
+        exactDisplay !== null &&
+        !exactTimeDisplaySuppressed &&
+        document.activeElement !== timeInput;
+      timeExactValue.classList.toggle("is-hidden", !showExactTime);
+      timeInput.classList.toggle("is-hidden", showExactTime);
+
+      if (showExactTime) {
+        timeExactValue.replaceChildren(createAutoPauseTimeValue(exactDisplay));
+      } else if (document.activeElement !== timeInput) {
+        timeInput.value = currentTimeText;
+      }
       previousTime.disabled = time <= 0;
       resetTime.disabled = time <= 0;
     },
@@ -475,6 +529,18 @@ export function createControls(callbacks: ControlCallbacks): Controls {
       scaleLine.style.width = `${pixelsPerMetre}px`;
     },
   };
+}
+
+function createAutoPauseTimeValue(value: AutoPauseTimeDisplay): Element {
+  if (typeof value === "string") return createMathExpression(value);
+  if (value.kind === "square-root") {
+    return createSquareRootValue(value.radicand, value.negative);
+  }
+  return createQuadraticSurdValue(
+    value.linearTerm,
+    value.radicand,
+    value.denominator,
+  );
 }
 
 export function parseGravity(value: string): number | null {
@@ -566,20 +632,10 @@ function setKinematicOutputs(
 }
 
 function setSuvatAnalysis(
-  invalidReason: HTMLElement,
   equationsContainer: HTMLElement,
-  interval: ConstantAccelerationInterval,
   equations: SuvatEquationResult[],
 ): void {
-  invalidReason.classList.toggle("is-hidden", interval.valid);
-  equationsContainer.classList.toggle("is-hidden", !interval.valid);
-
-  if (!interval.valid) {
-    invalidReason.textContent = interval.reason ?? "SUVAT is not valid over this interval.";
-    return;
-  }
-
-  invalidReason.textContent = "";
+  equationsContainer.classList.remove("is-hidden");
   ensureSuvatEquationElements(equationsContainer, equations);
 
   for (const equation of equations) {
@@ -590,6 +646,43 @@ function setSuvatAnalysis(
 
     populateSuvatEquationElement(element, equation);
   }
+}
+
+function setPhaseIntervalNote(
+  element: HTMLElement,
+  note: PhaseIntervalNote | null,
+): void {
+  element.classList.toggle("is-hidden", note === null);
+  if (!note) {
+    element.replaceChildren();
+    return;
+  }
+
+  const changedLine = document.createElement("span");
+  changedLine.className = "phase-interval-note-line";
+  changedLine.append(
+    document.createTextNode("Acceleration changed at "),
+    createMathExpression(`t = ${note.startTime} s`),
+    document.createTextNode("."),
+  );
+  const intervalLine = document.createElement("span");
+  intervalLine.className = "phase-interval-note-line";
+  intervalLine.append(
+    document.createTextNode("SUVAT interval: "),
+    createMathExpression(`${note.startTime} s`),
+    document.createTextNode(" to "),
+    createMathExpression(`${note.endTime} s`),
+    document.createTextNode("."),
+  );
+  const calculationLine = document.createElement("span");
+  calculationLine.className = "phase-interval-note-line";
+  calculationLine.append(
+    createMathExpression(
+      `${note.endTime} s − ${note.startTime} s = ${note.phaseTime} s`,
+    ),
+    document.createTextNode("."),
+  );
+  element.replaceChildren(changedLine, intervalLine, calculationLine);
 }
 
 function populateSuvatEquationElement(

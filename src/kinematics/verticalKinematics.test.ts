@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createParticle } from "../model/Particle";
 import { calculateParticleState } from "../physics/calculateParticleState";
+import { determineActiveKinematicPhase } from "./kinematicPhase";
 import { calculateVerticalKinematicState } from "./verticalKinematics";
+
+const environment = { gravity: 9.8, groundEnabled: false };
 
 describe("calculateVerticalKinematicState", () => {
   it("derives upward-positive s, u, v, a, and t from world state", () => {
@@ -11,7 +14,8 @@ describe("calculateVerticalKinematicState", () => {
       groundEnabled: false,
     });
 
-    expect(calculateVerticalKinematicState(particle, worldState, 1, "up")).toEqual({
+    const phase = determineActiveKinematicPhase(particle, 1, environment);
+    expect(calculateVerticalKinematicState(phase, worldState, 1, "up")).toEqual({
       s: -4.9,
       u: 0,
       v: -9.8,
@@ -29,8 +33,9 @@ describe("calculateVerticalKinematicState", () => {
     });
     const snapshot = structuredClone({ particle, worldState });
 
-    const upward = calculateVerticalKinematicState(particle, worldState, 1, "up");
-    const downward = calculateVerticalKinematicState(particle, worldState, 1, "down");
+    const phase = determineActiveKinematicPhase(particle, 1, environment);
+    const upward = calculateVerticalKinematicState(phase, worldState, 1, "up");
+    const downward = calculateVerticalKinematicState(phase, worldState, 1, "down");
 
     expect(upward.s).toBeCloseTo(0.1, 12);
     expect(upward.u).toBe(5);
@@ -55,7 +60,7 @@ describe("calculateVerticalKinematicState", () => {
     });
 
     const kinematics = calculateVerticalKinematicState(
-      particle,
+      determineActiveKinematicPhase(particle, 2, environment),
       worldState,
       2,
       "up",

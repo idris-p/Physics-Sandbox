@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   addRationals,
   derivedValue,
+  divideRationals,
   enteredDecimal,
   formatFinalValue,
   formatSquareRootValue,
@@ -117,6 +118,15 @@ describe("exact SUVAT display values", () => {
       numerator: -147n,
       denominator: 50n,
     });
+  });
+
+  it("divides rationals exactly", () => {
+    expect(
+      divideRationals(
+        { numerator: 5n, denominator: 2n },
+        { numerator: 15n, denominator: 4n },
+      ),
+    ).toEqual({ numerator: 2n, denominator: 3n });
   });
 
   it("changes a preserved entered decimal's sign without changing its form", () => {

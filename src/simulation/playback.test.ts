@@ -4,8 +4,10 @@ import {
   advancePlayback,
   earliestPauseTime,
   getNextIntegerSecond,
+  getNextGroundContactPauseEvent,
   getNextGroundContactPauseTime,
-  getNextMaximumHeightPauseTime,
+  getNextGreatestHeightPauseEvent,
+  getNextGreatestHeightPauseTime,
 } from "./playback";
 
 describe("playback pausing", () => {
@@ -30,12 +32,12 @@ describe("playback pausing", () => {
     });
   });
 
-  it("finds the exact maximum-height time for an enabled particle", () => {
+  it("finds the exact greatest-height time for an enabled particle", () => {
     const particle = createParticle("launched", { x: 0, y: 0 });
     particle.initialVelocity.y = 9.8;
-    particle.pauseAtMaximumHeight = true;
+    particle.pauseAtGreatestHeight = true;
 
-    expect(getNextMaximumHeightPauseTime([particle], 0, 9.8)).toBe(1);
+    expect(getNextGreatestHeightPauseTime([particle], 0, 9.8)).toBe(1);
     expect(advancePlayback(0.99, 0.02, 1)).toEqual({
       time: 1,
       reachedScheduledPause: true,
@@ -44,14 +46,30 @@ describe("playback pausing", () => {
 
   it("does not trigger at t = 0 or without negative acceleration", () => {
     const stationary = createParticle("stationary", { x: 0, y: 10 });
-    stationary.pauseAtMaximumHeight = true;
+    stationary.pauseAtGreatestHeight = true;
     const launched = createParticle("launched", { x: 0, y: 10 });
     launched.initialVelocity.y = 5;
-    launched.pauseAtMaximumHeight = true;
+    launched.pauseAtGreatestHeight = true;
 
-    expect(getNextMaximumHeightPauseTime([stationary], 0, 9.8)).toBeNull();
-    expect(getNextMaximumHeightPauseTime([launched], 0, 0)).toBeNull();
-    expect(getNextMaximumHeightPauseTime([launched], 5 / 9.8, 9.8)).toBeNull();
+    expect(getNextGreatestHeightPauseTime([stationary], 0, 9.8)).toBeNull();
+    expect(getNextGreatestHeightPauseTime([launched], 0, 0)).toBeNull();
+    expect(getNextGreatestHeightPauseTime([launched], 5 / 9.8, 9.8)).toBeNull();
+  });
+
+  it("returns every particle sharing the earliest greatest-height event", () => {
+    const first = createParticle("first", { x: 0, y: 2 });
+    first.initialVelocity.y = 9.8;
+    first.pauseAtGreatestHeight = true;
+    const second = createParticle("second", { x: 4, y: 5 });
+    second.initialVelocity.y = 9.8;
+    second.pauseAtGreatestHeight = true;
+    const later = createParticle("later", { x: 8, y: 5 });
+    later.initialVelocity.y = 19.6;
+    later.pauseAtGreatestHeight = true;
+
+    expect(
+      getNextGreatestHeightPauseEvent([later, first, second], 0, 9.8),
+    ).toEqual({ time: 1, particleIds: ["first", "second"] });
   });
 
   it("uses whichever automatic or requested pause comes first", () => {
@@ -77,6 +95,19 @@ describe("playback pausing", () => {
         0,
       ),
     ).toBeNull();
+  });
+
+  it("identifies every particle causing the earliest ground-contact pause", () => {
+    const first = createParticle("first", { x: 0, y: 4.9 });
+    first.pauseAtGroundContact = true;
+    const second = createParticle("second", { x: 2, y: 4.9 });
+    second.pauseAtGroundContact = true;
+    const later = createParticle("later", { x: 4, y: 19.6 });
+    later.pauseAtGroundContact = true;
+
+    expect(
+      getNextGroundContactPauseEvent([later, first, second], 0, 9.8, true, 0),
+    ).toEqual({ time: 1, particleIds: ["first", "second"] });
   });
 
   it("does not schedule ground contact without ground or from t = 0 rest", () => {

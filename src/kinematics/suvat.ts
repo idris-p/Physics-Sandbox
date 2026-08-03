@@ -1,8 +1,3 @@
-import type { Particle } from "../model/Particle";
-import {
-  calculateGroundImpactTime,
-  type PhysicsEnvironment,
-} from "../physics/calculateParticleState";
 import {
   addRationals,
   derivedValue,
@@ -26,11 +21,6 @@ export type SuvatEquationId =
   | "s-average-velocity"
   | "v2-u2-2as"
   | "s-v-t-a";
-
-export interface ConstantAccelerationInterval {
-  valid: boolean;
-  reason?: string;
-}
 
 export interface SuvatEquationResult {
   id: SuvatEquationId;
@@ -72,9 +62,6 @@ interface SuvatEquationDefinition {
   substitute: (state: SuvatDisplayState) => string;
   displayResult: (state: SuvatDisplayState) => DisplayValue;
 }
-
-const IMPACT_REASON =
-  "SUVAT no longer applies because acceleration was not kept constant.";
 
 export const SUVAT_EQUATIONS: readonly SuvatEquationDefinition[] = [
   {
@@ -130,27 +117,6 @@ export const SUVAT_EQUATIONS: readonly SuvatEquationDefinition[] = [
   },
 ] as const;
 
-export function assessConstantAccelerationInterval(
-  particle: Particle,
-  time: number,
-  environment: PhysicsEnvironment,
-): ConstantAccelerationInterval {
-  if (!environment.groundEnabled) return { valid: true };
-
-  const impactTime = calculateGroundImpactTime(
-    particle.initialPosition.y,
-    particle.initialVelocity.y,
-    Math.max(0, environment.gravity),
-    environment.groundHeight,
-  );
-
-  if (impactTime === null || impactTime === 0 || Math.max(0, time) <= impactTime) {
-    return { valid: true };
-  }
-
-  return { valid: false, reason: IMPACT_REASON };
-}
-
 export function calculateSuvatEquationResults(
   state: VerticalKinematicState,
   enteredValues: SuvatEnteredValues = {},
@@ -179,12 +145,12 @@ export function calculateSuvatEquationResults(
 export function calculateKinematicDisplayValues(
   state: VerticalKinematicState,
   enteredValues: SuvatEnteredValues = {},
-  constantAccelerationInterval = true,
+  useFormulaExactness = true,
 ): KinematicDisplayValues {
   const displayState = createDisplayState(
     state,
     enteredValues,
-    constantAccelerationInterval,
+    useFormulaExactness,
   );
   return {
     s: formatWorkingValue(displayState.s),

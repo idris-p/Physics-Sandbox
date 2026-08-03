@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createParticle } from "../model/Particle";
 import { calculateGroundImpactTime, calculateParticleState } from "../physics/calculateParticleState";
+import { determineActiveKinematicPhase } from "./kinematicPhase";
 import { calculateVerticalKinematicState } from "./verticalKinematics";
 import {
-  assessConstantAccelerationInterval,
   calculateKinematicDisplayValues,
   calculateSuvatEquationResults,
 } from "./suvat";
@@ -15,8 +15,12 @@ describe("SUVAT equations", () => {
       gravity: 9.8,
       groundEnabled: false,
     });
+    const phase = determineActiveKinematicPhase(particle, 1, {
+      gravity: 9.8,
+      groundEnabled: false,
+    });
     const kinematics = calculateVerticalKinematicState(
-      particle,
+      phase,
       currentState,
       1,
       "up",
@@ -197,24 +201,26 @@ describe("SUVAT equations", () => {
   });
 });
 
-describe("constant-acceleration interval validity", () => {
+describe("phase-aware SUVAT", () => {
   const environment = { gravity: 9.8, groundEnabled: true, groundHeight: 0 };
 
-  it("is valid before and exactly at first impact", () => {
+  it("uses free flight before and exactly at first impact", () => {
     const particle = createParticle("falling", { x: 0, y: 10 });
     const impactTime = calculateGroundImpactTime(10, 0, 9.8, 0);
     if (impactTime === null) throw new Error("Expected an impact time.");
 
     expect(
-      assessConstantAccelerationInterval(particle, impactTime - 0.01, environment),
-    ).toEqual({ valid: true });
-    expect(
-      assessConstantAccelerationInterval(particle, impactTime, environment),
-    ).toEqual({ valid: true });
-
+      determineActiveKinematicPhase(particle, impactTime - 0.01, environment),
+    ).toMatchObject({ kind: "free-flight", startTime: 0 });
+    const phaseAtImpact = determineActiveKinematicPhase(
+      particle,
+      impactTime,
+      environment,
+    );
+    expect(phaseAtImpact).toMatchObject({ kind: "free-flight", startTime: 0 });
     const stateAtImpact = calculateParticleState(particle, impactTime, environment);
     const kinematicsAtImpact = calculateVerticalKinematicState(
-      particle,
+      phaseAtImpact,
       stateAtImpact,
       impactTime,
       "up",
@@ -224,22 +230,33 @@ describe("constant-acceleration interval validity", () => {
     }
   });
 
-  it("is invalid after an interval crosses impact", () => {
+  it("restarts SUVAT from the grounded phase after impact", () => {
     const particle = createParticle("fallen", { x: 0, y: 10 });
-    const result = assessConstantAccelerationInterval(particle, 2, environment);
+    const impactTime = calculateGroundImpactTime(10, 0, 9.8, 0);
+    if (impactTime === null) throw new Error("Expected an impact time.");
+    const phase = determineActiveKinematicPhase(particle, 3, environment);
+    const state = calculateParticleState(particle, 3, environment);
+    const kinematics = calculateVerticalKinematicState(phase, state, 3, "up");
 
-    expect(result.valid).toBe(false);
-    expect(result.reason).toContain("acceleration changed");
+    expect(phase).toMatchObject({ kind: "grounded", startTime: impactTime });
+    expect(kinematics).toEqual({
+      s: 0,
+      u: 0,
+      v: 0,
+      a: 0,
+      t: 3 - impactTime,
+    });
+    for (const equation of calculateSuvatEquationResults(kinematics)) {
+      expect(equation.result).toBeCloseTo(equation.expected, 12);
+    }
   });
 
-  it("remains valid for a particle stationary on ground from t = 0", () => {
+  it("uses a grounded phase from t = 0 for a particle initially at rest", () => {
     const particle = createParticle("resting", { x: 0, y: 0 });
-    expect(assessConstantAccelerationInterval(particle, 10, environment)).toEqual({
-      valid: true,
-    });
-
+    const phase = determineActiveKinematicPhase(particle, 10, environment);
     const state = calculateParticleState(particle, 10, environment);
-    const kinematics = calculateVerticalKinematicState(particle, state, 10, "up");
+    const kinematics = calculateVerticalKinematicState(phase, state, 10, "up");
+    expect(phase).toMatchObject({ kind: "grounded", startTime: 0 });
     expect(kinematics.a).toBe(0);
     for (const equation of calculateSuvatEquationResults(kinematics)) {
       expect(equation.result).toBeCloseTo(equation.expected, 12);
@@ -251,12 +268,14 @@ describe("constant-acceleration interval validity", () => {
     particle.initialVelocity.y = 5;
     const returnTime = 2 * 5 / environment.gravity;
 
-    expect(assessConstantAccelerationInterval(particle, 0.5, environment)).toEqual({
-      valid: true,
-    });
     expect(
-      assessConstantAccelerationInterval(particle, returnTime + 0.01, environment)
-        .valid,
-    ).toBe(false);
+      determineActiveKinematicPhase(particle, 0.5, environment),
+    ).toMatchObject({ kind: "free-flight", startTime: 0 });
+    expect(
+      determineActiveKinematicPhase(particle, returnTime, environment),
+    ).toMatchObject({ kind: "free-flight", startTime: 0 });
+    expect(
+      determineActiveKinematicPhase(particle, returnTime + 0.01, environment),
+    ).toMatchObject({ kind: "grounded", startTime: returnTime });
   });
 });

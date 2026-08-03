@@ -9,7 +9,7 @@ export interface EnteredVerticalVelocity {
 export interface Particle {
   id: string;
   mass: number;
-  pauseAtMaximumHeight: boolean;
+  pauseAtGreatestHeight: boolean;
   pauseAtGroundContact: boolean;
   initialPosition: Vec2;
   initialVelocity: Vec2;
@@ -27,7 +27,7 @@ export function createParticle(id: string, position: Vec2): Particle {
   return {
     id,
     mass: 1,
-    pauseAtMaximumHeight: false,
+    pauseAtGreatestHeight: false,
     pauseAtGroundContact: false,
     initialPosition: { ...position },
     initialVelocity: { x: 0, y: 0 },

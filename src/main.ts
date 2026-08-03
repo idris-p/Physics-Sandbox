@@ -8,13 +8,22 @@ import {
   zoomCameraAt,
 } from "./canvas/camera";
 import { attachCanvasInteraction, type Tool } from "./canvas/interaction";
+import { getGreatestHeightMeasurements } from "./canvas/greatestHeightAnnotation";
 import { render } from "./canvas/renderer";
 import {
-  assessConstantAccelerationInterval,
   calculateKinematicDisplayValues,
   calculateSuvatEquationResults,
 } from "./kinematics/suvat";
-import { negateEnteredDecimal } from "./kinematics/exactDisplay";
+import {
+  derivedValue,
+  enteredDecimal,
+  formatWorkingValue,
+  negateEnteredDecimal,
+} from "./kinematics/exactDisplay";
+import {
+  determineActiveKinematicPhase,
+  type KinematicPhase,
+} from "./kinematics/kinematicPhase";
 import { calculateVerticalKinematicState } from "./kinematics/verticalKinematics";
 import { createParticle } from "./model/Particle";
 import type { ParticleState } from "./model/Particle";
@@ -22,11 +31,19 @@ import { createScene } from "./model/Scene";
 import { calculateSceneState } from "./physics/calculateSceneState";
 import { editParticleInitialVerticalVelocity } from "./simulation/editInitialConditions";
 import {
+  getGreatestHeightPauseTimeDisplay,
+  getGroundContactPauseTimeDisplay,
+  type AutoPauseTimeDisplay,
+} from "./simulation/autoPauseTimeDisplay";
+import {
   advancePlayback,
   earliestPauseTime,
-  getNextGroundContactPauseTime,
+  getNextGroundContactPauseEvent,
+  getNextGreatestHeightPauseEvent,
   getNextIntegerSecond,
-  getNextMaximumHeightPauseTime,
+  sameTime,
+  type GreatestHeightPauseEvent,
+  type GroundContactPauseEvent,
 } from "./simulation/playback";
 import {
   createControls,
@@ -45,6 +62,8 @@ let currentTimeEnteredText: string | undefined = "0";
 let isPlaying = false;
 let pendingPauseTime: number | null = null;
 let previousFrameTimestamp: number | null = null;
+let greatestHeightPauseEvent: GreatestHeightPauseEvent | null = null;
+let autoPauseTimeDisplay: AutoPauseTimeDisplay | null = null;
 let nextParticleId = 1;
 
 const controls = createControls({
@@ -91,15 +110,19 @@ const controls = createControls({
       scene.settings.positiveDirection,
       enteredText,
     );
+    greatestHeightPauseEvent = null;
+    autoPauseTimeDisplay = null;
     updateUi();
   },
-  onParticlePauseAtMaximumHeightChange: (enabled) => {
+  onParticlePauseAtGreatestHeightChange: (enabled) => {
     const particle = scene.particles.find(
       (candidate) => candidate.id === selectedParticleId,
     );
     if (!particle) return;
 
-    particle.pauseAtMaximumHeight = enabled;
+    particle.pauseAtGreatestHeight = enabled;
+    greatestHeightPauseEvent = null;
+    autoPauseTimeDisplay = null;
     updateUi();
   },
   onParticlePauseAtGroundContactChange: (enabled) => {
@@ -109,6 +132,7 @@ const controls = createControls({
     if (!particle) return;
 
     particle.pauseAtGroundContact = enabled;
+    autoPauseTimeDisplay = null;
     updateUi();
   },
   onPositiveDirectionChange: (direction) => {
@@ -126,6 +150,8 @@ const controls = createControls({
   onClearScene: clearScene,
   onTimeChange: (time, enteredText) => {
     setPlaying(false);
+    greatestHeightPauseEvent = null;
+    autoPauseTimeDisplay = null;
     currentTime = time;
     currentTimeEnteredText = enteredText;
     updateUi();
@@ -196,6 +222,7 @@ attachCanvasInteraction({
   },
   onParticleDragChange: (particleId) => {
     draggedParticleId = particleId;
+    if (particleId) greatestHeightPauseEvent = null;
   },
   onDeleteParticle: removeParticle,
   onPan: (screenDelta) => panCamera(camera, screenDelta),
@@ -249,12 +276,12 @@ function renderFrame(timestamp: number): void {
 
   if (isPlaying) {
     if (previousFrameTimestamp !== null) {
-      const maximumHeightPauseTime = getNextMaximumHeightPauseTime(
+      const nextGreatestHeightEvent = getNextGreatestHeightPauseEvent(
         scene.particles,
         currentTime,
         scene.settings.gravity,
       );
-      const groundContactPauseTime = getNextGroundContactPauseTime(
+      const nextGroundContactEvent = getNextGroundContactPauseEvent(
         scene.particles,
         currentTime,
         scene.settings.gravity,
@@ -265,8 +292,8 @@ function renderFrame(timestamp: number): void {
         currentTime,
         (timestamp - previousFrameTimestamp) / 1000,
         earliestPauseTime(
-          earliestPauseTime(pendingPauseTime, maximumHeightPauseTime),
-          groundContactPauseTime,
+          earliestPauseTime(pendingPauseTime, nextGreatestHeightEvent?.time ?? null),
+          nextGroundContactEvent?.time ?? null,
         ),
       );
       currentTime = advance.time;
@@ -275,10 +302,21 @@ function renderFrame(timestamp: number): void {
 
       if (advance.reachedScheduledPause) {
         setPlaying(false);
+        greatestHeightPauseEvent =
+          nextGreatestHeightEvent &&
+          sameTime(advance.time, nextGreatestHeightEvent.time)
+            ? nextGreatestHeightEvent
+            : null;
+        autoPauseTimeDisplay = getTriggeredAutoPauseTimeDisplay(
+          advance.time,
+          nextGreatestHeightEvent,
+          nextGroundContactEvent,
+        );
       }
       controls.setTime(
         currentTime,
         isPlaying ? formatPlaybackTime(currentTime) : undefined,
+        isPlaying ? null : autoPauseTimeDisplay,
       );
     }
 
@@ -302,12 +340,21 @@ function renderFrame(timestamp: number): void {
     camera,
     currentTime,
     timestamp,
+    getGreatestHeightMeasurements(
+      greatestHeightPauseEvent,
+      currentTime,
+      scene.groundEnabled,
+      scene.groundHeight,
+      activeParticleStates,
+    ),
   );
   requestAnimationFrame(renderFrame);
 }
 
 function stepTime(interval: number): void {
   setPlaying(false);
+  greatestHeightPauseEvent = null;
+  autoPauseTimeDisplay = null;
   currentTime = Math.max(0, roundTime(currentTime + interval));
   currentTimeEnteredText = undefined;
   updateUi();
@@ -315,12 +362,18 @@ function stepTime(interval: number): void {
 
 function resetTime(): void {
   setPlaying(false);
+  greatestHeightPauseEvent = null;
+  autoPauseTimeDisplay = null;
   currentTime = 0;
   currentTimeEnteredText = "0";
   updateUi();
 }
 
 function setPlaying(playing: boolean): void {
+  if (playing) {
+    greatestHeightPauseEvent = null;
+    autoPauseTimeDisplay = null;
+  }
   isPlaying = playing;
   pendingPauseTime = null;
   previousFrameTimestamp = null;
@@ -375,9 +428,43 @@ function updateUi(): void {
   controls.setTime(
     currentTime,
     isPlaying ? formatPlaybackTime(currentTime) : currentTimeEnteredText,
+    isPlaying ? null : autoPauseTimeDisplay,
   );
   controls.setPlaybackState(getPlaybackButtonState());
   controls.setZoom(camera.pixelsPerMetre);
+}
+
+function getTriggeredAutoPauseTimeDisplay(
+  pauseTime: number,
+  greatestHeightEvent: GreatestHeightPauseEvent | null,
+  groundContactEvent: GroundContactPauseEvent | null,
+): AutoPauseTimeDisplay | null {
+  if (greatestHeightEvent && sameTime(pauseTime, greatestHeightEvent.time)) {
+    const particle = scene.particles.find(
+      (candidate) => candidate.id === greatestHeightEvent.particleIds[0],
+    );
+    return particle
+      ? getGreatestHeightPauseTimeDisplay(
+          particle,
+          scene.settings.gravityInput,
+        )
+      : null;
+  }
+
+  if (groundContactEvent && sameTime(pauseTime, groundContactEvent.time)) {
+    const particle = scene.particles.find(
+      (candidate) => candidate.id === groundContactEvent.particleIds[0],
+    );
+    return particle
+      ? getGroundContactPauseTimeDisplay(
+          particle,
+          scene.settings.gravityInput,
+          scene.groundHeight,
+        )
+      : null;
+  }
+
+  return null;
 }
 
 function updateSelectionUi(activeParticleStates: ParticleState[]): void {
@@ -407,25 +494,27 @@ function createParticleSelectionProperties(
   particle: (typeof scene.particles)[number],
   particleState: ParticleState,
 ) {
+  const phase = determineActiveKinematicPhase(particle, currentTime, {
+    gravity: scene.settings.gravity,
+    groundEnabled: scene.groundEnabled,
+    groundHeight: scene.groundHeight,
+  });
   const kinematics = calculateVerticalKinematicState(
-    particle,
+    phase,
     particleState,
     currentTime,
     scene.settings.positiveDirection,
   );
-  const suvatInterval = assessConstantAccelerationInterval(
-    particle,
-    currentTime,
-    {
-      gravity: scene.settings.gravity,
-      groundEnabled: scene.groundEnabled,
-      groundHeight: scene.groundHeight,
-    },
-  );
   const enteredValues = {
-    u: getInitialVelocityEnteredText(particle),
-    a: getGravityEnteredText(kinematics.a),
-    t: currentTimeEnteredText,
+    u:
+      phase.kind === "free-flight"
+        ? getInitialVelocityEnteredText(particle)
+        : undefined,
+    a:
+      phase.kind === "free-flight"
+        ? getGravityEnteredText(kinematics.a)
+        : undefined,
+    t: phase.startTime === 0 ? currentTimeEnteredText : undefined,
   };
 
   return {
@@ -433,19 +522,27 @@ function createParticleSelectionProperties(
     position: particleState.position,
     mass: particle.mass,
     initialVelocityText: getInitialVelocityEnteredText(particle),
-    pauseAtMaximumHeight: particle.pauseAtMaximumHeight,
+    pauseAtGreatestHeight: particle.pauseAtGreatestHeight,
     pauseAtGroundContact: particle.pauseAtGroundContact,
     groundEnabled: scene.groundEnabled,
-    kinematics: calculateKinematicDisplayValues(
-      kinematics,
-      enteredValues,
-      suvatInterval.valid,
-    ),
-    suvatInterval,
-    suvatEquations: suvatInterval.valid
-      ? calculateSuvatEquationResults(kinematics, enteredValues)
-      : [],
+    phaseNote: createPhaseIntervalNote(phase),
+    kinematics: calculateKinematicDisplayValues(kinematics, enteredValues),
+    suvatEquations: calculateSuvatEquationResults(kinematics, enteredValues),
   };
+}
+
+function createPhaseIntervalNote(phase: KinematicPhase) {
+  if (phase.startTime === 0) return null;
+
+  const phaseTime = Math.max(0, currentTime - phase.startTime);
+  const startText = formatWorkingValue(derivedValue(phase.startTime));
+  const endText = formatWorkingValue(
+    currentTimeEnteredText === undefined
+      ? derivedValue(currentTime)
+      : enteredDecimal(currentTimeEnteredText, currentTime),
+  );
+  const phaseTimeText = formatWorkingValue(derivedValue(phaseTime));
+  return { startTime: startText, endTime: endText, phaseTime: phaseTimeText };
 }
 
 function getInitialVelocityEnteredText(

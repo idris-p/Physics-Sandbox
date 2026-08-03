@@ -6,31 +6,53 @@ export interface PlaybackAdvance {
   reachedScheduledPause: boolean;
 }
 
+export interface GreatestHeightPauseEvent {
+  time: number;
+  particleIds: string[];
+}
+
+export interface GroundContactPauseEvent {
+  time: number;
+  particleIds: string[];
+}
+
 export function getNextIntegerSecond(time: number): number {
   return Math.floor(Math.max(0, time)) + 1;
 }
 
-export function getNextMaximumHeightPauseTime(
+export function getNextGreatestHeightPauseTime(
   particles: Particle[],
   currentTime: number,
   gravity: number,
 ): number | null {
+  return getNextGreatestHeightPauseEvent(particles, currentTime, gravity)?.time ?? null;
+}
+
+export function getNextGreatestHeightPauseEvent(
+  particles: Particle[],
+  currentTime: number,
+  gravity: number,
+): GreatestHeightPauseEvent | null {
   if (gravity <= 0) return null;
 
-  let nextPauseTime: number | null = null;
+  let nextEvent: GreatestHeightPauseEvent | null = null;
   for (const particle of particles) {
-    if (!particle.pauseAtMaximumHeight || particle.initialVelocity.y <= 0) {
+    if (!particle.pauseAtGreatestHeight || particle.initialVelocity.y <= 0) {
       continue;
     }
 
-    const maximumHeightTime = particle.initialVelocity.y / gravity;
-    if (maximumHeightTime <= 0 || maximumHeightTime <= currentTime) continue;
-    if (nextPauseTime === null || maximumHeightTime < nextPauseTime) {
-      nextPauseTime = maximumHeightTime;
+    const greatestHeightTime = particle.initialVelocity.y / gravity;
+    if (greatestHeightTime <= 0 || greatestHeightTime <= currentTime) continue;
+    if (nextEvent === null) {
+      nextEvent = { time: greatestHeightTime, particleIds: [particle.id] };
+    } else if (sameTime(greatestHeightTime, nextEvent.time)) {
+      nextEvent.particleIds.push(particle.id);
+    } else if (greatestHeightTime < nextEvent.time) {
+      nextEvent = { time: greatestHeightTime, particleIds: [particle.id] };
     }
   }
 
-  return nextPauseTime;
+  return nextEvent;
 }
 
 export function getNextGroundContactPauseTime(
@@ -40,9 +62,25 @@ export function getNextGroundContactPauseTime(
   groundEnabled: boolean,
   groundHeight: number,
 ): number | null {
+  return getNextGroundContactPauseEvent(
+    particles,
+    currentTime,
+    gravity,
+    groundEnabled,
+    groundHeight,
+  )?.time ?? null;
+}
+
+export function getNextGroundContactPauseEvent(
+  particles: Particle[],
+  currentTime: number,
+  gravity: number,
+  groundEnabled: boolean,
+  groundHeight: number,
+): GroundContactPauseEvent | null {
   if (!groundEnabled) return null;
 
-  let nextPauseTime: number | null = null;
+  let nextEvent: GroundContactPauseEvent | null = null;
   for (const particle of particles) {
     if (!particle.pauseAtGroundContact) continue;
 
@@ -55,12 +93,16 @@ export function getNextGroundContactPauseTime(
     if (impactTime === null || impactTime <= 0 || impactTime <= currentTime) {
       continue;
     }
-    if (nextPauseTime === null || impactTime < nextPauseTime) {
-      nextPauseTime = impactTime;
+    if (nextEvent === null) {
+      nextEvent = { time: impactTime, particleIds: [particle.id] };
+    } else if (sameTime(impactTime, nextEvent.time)) {
+      nextEvent.particleIds.push(particle.id);
+    } else if (impactTime < nextEvent.time) {
+      nextEvent = { time: impactTime, particleIds: [particle.id] };
     }
   }
 
-  return nextPauseTime;
+  return nextEvent;
 }
 
 export function earliestPauseTime(
@@ -90,4 +132,11 @@ export function advancePlayback(
     time: nextTime,
     reachedScheduledPause: false,
   };
+}
+
+export function sameTime(left: number, right: number): boolean {
+  return (
+    Math.abs(left - right) <=
+    Number.EPSILON * Math.max(1, Math.abs(left), Math.abs(right)) * 16
+  );
 }

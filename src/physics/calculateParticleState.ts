@@ -32,6 +32,21 @@ export function calculateGroundImpactTime(
   return (initialVerticalVelocity + Math.sqrt(discriminant)) / gravity;
 }
 
+export function isAtPositiveGroundImpact(
+  time: number,
+  impactTime: number,
+): boolean {
+  if (impactTime <= 0) return false;
+  const safeTime = Math.max(0, time);
+  return Math.abs(safeTime - impactTime) <= groundImpactTimeTolerance(safeTime);
+}
+
+export function isAfterGroundImpact(time: number, impactTime: number): boolean {
+  if (impactTime === 0) return true;
+  const safeTime = Math.max(0, time);
+  return safeTime > impactTime + groundImpactTimeTolerance(safeTime);
+}
+
 export function calculateParticleState(
   particle: Particle,
   time: number,
@@ -54,15 +69,12 @@ export function calculateParticleState(
     // A positive first-contact instant belongs to the free-fall phase. This keeps
     // its velocity and acceleration available for an exact SUVAT analysis. Any
     // time after contact, or contact at t = 0, is the resting phase.
-    const impactTolerance = Number.EPSILON * Math.max(1, safeTime) * 16;
     isFirstContact =
-      impactTime !== null &&
-      impactTime > 0 &&
-      Math.abs(safeTime - impactTime) <= impactTolerance;
+      impactTime !== null && isAtPositiveGroundImpact(safeTime, impactTime);
 
     if (
       impactTime !== null &&
-      (impactTime === 0 || safeTime > impactTime + impactTolerance)
+      isAfterGroundImpact(safeTime, impactTime)
     ) {
       return {
         id: particle.id,
@@ -89,4 +101,8 @@ export function calculateParticleState(
     },
     acceleration: { x: 0, y: -gravity },
   };
+}
+
+function groundImpactTimeTolerance(time: number): number {
+  return Number.EPSILON * Math.max(1, time) * 16;
 }
