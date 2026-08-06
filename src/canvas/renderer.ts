@@ -1,5 +1,6 @@
 import type { ParticleState } from "../model/Particle";
 import type { Scene } from "../model/Scene";
+import type { Vec2 } from "../math/Vec2";
 import {
   calculateGreatestHeightHorizontalGeometry,
   type GreatestHeightMeasurement,
@@ -8,7 +9,13 @@ import { worldToScreen, type Camera } from "./camera";
 import { renderGrid } from "./grid";
 import {
   getInitialVelocityAnnotation,
+  calculateInitialVelocityTextSize,
+  isNarrowInitialVelocityAngle,
+  INITIAL_VELOCITY_ANGLE_ARC_RADIUS_METRES,
   INITIAL_VELOCITY_ARROW_LENGTH_METRES,
+  type AngleInitialVelocityAnnotation,
+  type ComponentInitialVelocityAnnotation,
+  type SpeedInitialVelocityAnnotation,
 } from "./initialVelocityAnnotation";
 import {
   groupParticlesByPosition,
@@ -18,6 +25,16 @@ import {
   getSelectionWhiteMix,
   mixColourWithWhite,
 } from "./selectionPulse";
+import { tokenizeMathText, type MathToken } from "../ui/mathMarkup";
+import { getExactValueTooltip } from "../ui/exactValueTooltip";
+
+export interface CanvasExactValueHoverTarget {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  tooltip: string;
+}
 
 export function render(
   context: CanvasRenderingContext2D,
@@ -28,8 +45,8 @@ export function render(
   camera: Camera,
   currentTime: number,
   animationTimestamp: number,
-  greatestHeightMeasurements: GreatestHeightMeasurement[],
-): void {
+  heightMeasurements: GreatestHeightMeasurement[],
+): CanvasExactValueHoverTarget[] {
   context.clearRect(0, 0, camera.viewportWidth, camera.viewportHeight);
   context.fillStyle = "#f8f7f1";
   context.fillRect(0, 0, camera.viewportWidth, camera.viewportHeight);
@@ -59,9 +76,9 @@ export function render(
     );
   }
 
-  renderGreatestHeightMeasurements(
+  const exactValueHoverTargets = renderHeightMeasurements(
     context,
-    greatestHeightMeasurements,
+    heightMeasurements,
     camera,
   );
 
@@ -71,31 +88,29 @@ export function render(
       context,
       particle,
       coincidentParticles.length,
-      scene.groundEnabled,
-      scene.groundHeight,
       camera,
       coincidentParticles.some((candidate) => candidate.id === selectedParticleId)
         ? selectionWhiteMix
         : 0,
     );
   }
+
+  return exactValueHoverTargets;
 }
 
-function renderGreatestHeightMeasurements(
+function renderHeightMeasurements(
   context: CanvasRenderingContext2D,
   measurements: GreatestHeightMeasurement[],
   camera: Camera,
-): void {
+): CanvasExactValueHoverTarget[] {
+  const hoverTargets: CanvasExactValueHoverTarget[] = [];
   for (const measurement of measurements) {
     const particlePoint = worldToScreen(measurement.position, camera);
-    const groundPoint = worldToScreen(
+    const referencePoint = worldToScreen(
       { x: measurement.position.x, y: measurement.groundHeight },
       camera,
     );
-    const { centre, radius } = getRenderedParticleGeometry(particlePoint, camera, {
-      groundEnabled: true,
-      groundHeight: measurement.groundHeight,
-    });
+    const { centre, radius } = getRenderedParticleGeometry(particlePoint, camera);
     const horizontalGeometry = calculateGreatestHeightHorizontalGeometry(
       centre.x,
       radius,
@@ -103,7 +118,8 @@ function renderGreatestHeightMeasurements(
     );
     const dimensionX = horizontalGeometry.arrowX;
     const topY = particlePoint.y;
-    const bottomY = groundPoint.y;
+    const bottomY = referencePoint.y;
+    const arrowDirection = Math.sign(bottomY - topY) || 1;
     const bottomCapHalfWidth =
       (horizontalGeometry.perpendicularEndX -
         horizontalGeometry.perpendicularStartX) /
@@ -130,46 +146,99 @@ function renderGreatestHeightMeasurements(
     context.lineTo(horizontalGeometry.perpendicularEndX, topY);
     context.moveTo(dimensionX - bottomCapHalfWidth, bottomY);
     context.lineTo(dimensionX + bottomCapHalfWidth, bottomY);
-    context.moveTo(dimensionX - arrowHalfWidth, topY + arrowLength);
+    context.moveTo(
+      dimensionX - arrowHalfWidth,
+      topY + arrowDirection * arrowLength,
+    );
     context.lineTo(dimensionX, topY);
-    context.lineTo(dimensionX + arrowHalfWidth, topY + arrowLength);
-    context.moveTo(dimensionX - arrowHalfWidth, bottomY - arrowLength);
+    context.lineTo(
+      dimensionX + arrowHalfWidth,
+      topY + arrowDirection * arrowLength,
+    );
+    context.moveTo(
+      dimensionX - arrowHalfWidth,
+      bottomY - arrowDirection * arrowLength,
+    );
     context.lineTo(dimensionX, bottomY);
-    context.lineTo(dimensionX + arrowHalfWidth, bottomY - arrowLength);
+    context.lineTo(
+      dimensionX + arrowHalfWidth,
+      bottomY - arrowDirection * arrowLength,
+    );
     context.stroke();
 
     const fontSize = Math.max(15, Math.min(22, camera.pixelsPerMetre * 0.46));
     context.font = `700 ${fontSize}px "KG Primary Penmanship Alt", sans-serif`;
     context.textAlign = "left";
     context.textBaseline = "middle";
-    drawGreatestHeightLabel(
+    const valueBounds = drawHeightMeasurementLabel(
       context,
-      measurement.valueDisplay,
+      measurement,
       horizontalGeometry.perpendicularEndX + 8,
       (topY + bottomY) / 2,
       fontSize,
     );
+    const tooltip = getExactValueTooltip(
+      measurement.valueDisplay,
+      measurement.height,
+    );
+    if (tooltip) {
+      hoverTargets.push({
+        left: valueBounds.left - 4,
+        top: valueBounds.top - 4,
+        right: valueBounds.right + 4,
+        bottom: valueBounds.bottom + 4,
+        tooltip,
+      });
+    }
     context.restore();
   }
+  return hoverTargets;
 }
 
-function drawGreatestHeightLabel(
+function drawHeightMeasurementLabel(
   context: CanvasRenderingContext2D,
-  value: GreatestHeightMeasurement["valueDisplay"],
+  measurement: GreatestHeightMeasurement,
   x: number,
   y: number,
   fontSize: number,
-): void {
-  const prefix = "Greatest height = ";
+): { left: number; top: number; right: number; bottom: number } {
+  const prefix = measurement.labelPrefix;
   context.textAlign = "left";
   context.textBaseline = "middle";
   context.fillText(prefix, x, y);
   let cursorX = x + context.measureText(prefix).width;
-  cursorX += drawCanvasMathValue(context, value, cursorX, y, fontSize);
+  const valueStartX = cursorX;
+  const valueWidth = drawCanvasMathValue(
+    context,
+    measurement.valueDisplay,
+    cursorX,
+    y,
+    fontSize,
+  );
+  cursorX += valueWidth;
   context.fillText(" m", cursorX, y);
+  return {
+    left: valueStartX,
+    top: y - fontSize * 0.85,
+    right: valueStartX + valueWidth,
+    bottom: y + fontSize * 0.85,
+  };
 }
 
-function drawCanvasMathValue(
+export function findCanvasExactValueHoverTarget(
+  targets: CanvasExactValueHoverTarget[],
+  point: { x: number; y: number },
+): CanvasExactValueHoverTarget | null {
+  return targets.find(
+    (target) =>
+      point.x >= target.left &&
+      point.x <= target.right &&
+      point.y >= target.top &&
+      point.y <= target.bottom,
+  ) ?? null;
+}
+
+export function drawCanvasMathValue(
   context: CanvasRenderingContext2D,
   value: GreatestHeightMeasurement["valueDisplay"],
   x: number,
@@ -177,20 +246,7 @@ function drawCanvasMathValue(
   fontSize: number,
 ): number {
   if (typeof value === "string") {
-    const fraction = parseFraction(value);
-    if (fraction) {
-      return drawStackedFraction(
-        context,
-        fraction.numerator,
-        fraction.denominator,
-        x,
-        y,
-        fontSize,
-      );
-    }
-
-    context.fillText(value, x, y);
-    return context.measureText(value).width;
+    return drawCanvasMathText(context, value, x, y, fontSize);
   }
 
   let cursorX = x;
@@ -222,6 +278,134 @@ function drawCanvasMathValue(
   context.stroke();
   context.lineWidth = originalLineWidth;
   return cursorX - x + radicandWidth + 2;
+}
+
+function drawCanvasMathText(
+  context: CanvasRenderingContext2D,
+  value: string,
+  x: number,
+  y: number,
+  fontSize: number,
+): number {
+  let cursorX = x;
+  for (const token of tokenizeMathText(value)) {
+    const tokenWidth = drawCanvasMathToken(
+      context,
+      token,
+      cursorX,
+      y,
+      fontSize,
+    );
+    cursorX += tokenWidth;
+  }
+  return cursorX - x;
+}
+
+function drawCanvasMathToken(
+  context: CanvasRenderingContext2D,
+  token: MathToken,
+  x: number,
+  y: number,
+  fontSize: number,
+): number {
+  let baseWidth: number;
+  switch (token.kind) {
+    case "fraction":
+      baseWidth = drawStackedFraction(
+        context,
+        token.numerator,
+        token.denominator,
+        x,
+        y,
+        fontSize,
+      );
+      break;
+    case "rational-surd": {
+      const sign = token.numeratorCoefficient.startsWith("−") ? "−" : "";
+      const magnitude = token.numeratorCoefficient.replace(/^[−-]/, "");
+      const coefficient = magnitude === "1" ? "" : magnitude;
+      baseWidth = drawStackedFraction(
+        context,
+        `${sign}${coefficient}√(${token.radicand})`,
+        token.denominator,
+        x,
+        y,
+        fontSize,
+      );
+      break;
+    }
+    case "square-root":
+      baseWidth = drawCanvasSquareRoot(
+        context,
+        token.radicand,
+        x,
+        y,
+        fontSize,
+      );
+      break;
+    case "space":
+      return context.measureText(" ").width;
+    default:
+      context.fillText(token.value, x, y);
+      baseWidth = context.measureText(token.value).width;
+      break;
+  }
+
+  return baseWidth + drawCanvasExponent(
+    context,
+    token.exponent,
+    x + baseWidth,
+    y,
+    fontSize,
+  );
+}
+
+function drawCanvasSquareRoot(
+  context: CanvasRenderingContext2D,
+  radicand: string,
+  x: number,
+  y: number,
+  fontSize: number,
+): number {
+  const radical = "√";
+  context.fillText(radical, x, y);
+  const radicalWidth = context.measureText(radical).width - 1;
+  const radicandX = x + radicalWidth;
+  const radicandWidth = drawCanvasMathText(
+    context,
+    radicand,
+    radicandX,
+    y,
+    fontSize,
+  );
+  const originalLineWidth = context.lineWidth;
+  context.lineWidth = 1.5;
+  context.beginPath();
+  context.moveTo(radicandX - 1, y - fontSize * 0.55);
+  context.lineTo(radicandX + radicandWidth + 2, y - fontSize * 0.55);
+  context.stroke();
+  context.lineWidth = originalLineWidth;
+  return radicalWidth + radicandWidth + 2;
+}
+
+function drawCanvasExponent(
+  context: CanvasRenderingContext2D,
+  exponent: string | undefined,
+  x: number,
+  y: number,
+  fontSize: number,
+): number {
+  if (!exponent) return 0;
+  const originalFont = context.font;
+  const originalBaseline = context.textBaseline;
+  const exponentFontSize = fontSize * 0.62;
+  context.font = `700 ${exponentFontSize}px "KG Primary Penmanship Alt", sans-serif`;
+  context.textBaseline = "middle";
+  context.fillText(exponent, x, y - fontSize * 0.38);
+  const width = context.measureText(exponent).width;
+  context.font = originalFont;
+  context.textBaseline = originalBaseline;
+  return width;
 }
 
 function drawStackedFraction(
@@ -291,19 +475,22 @@ function renderInitialVelocityAnnotations(
 
     const annotation = getInitialVelocityAnnotation(
       particle,
-      scene.settings.positiveDirection,
+      scene.settings,
     );
     if (!annotation) continue;
 
     const point = worldToScreen(particleState.position, camera);
-    const { centre } = getRenderedParticleGeometry(point, camera, {
-      groundEnabled: scene.groundEnabled,
-      groundHeight: scene.groundHeight,
-    });
-    const direction = annotation.direction === "up" ? -1 : 1;
+    const { centre } = getRenderedParticleGeometry(point, camera);
     const arrowLength =
       INITIAL_VELOCITY_ARROW_LENGTH_METRES * camera.pixelsPerMetre;
-    const tipY = centre.y + direction * arrowLength;
+    const screenDirection = {
+      x: annotation.direction.x,
+      y: -annotation.direction.y,
+    };
+    const tip = {
+      x: centre.x + screenDirection.x * arrowLength,
+      y: centre.y + screenDirection.y * arrowLength,
+    };
     const arrowHeadLength = Math.max(
       8,
       Math.min(16, camera.pixelsPerMetre * 0.3),
@@ -318,30 +505,271 @@ function renderInitialVelocityAnnotations(
     context.setLineDash([10, 8]);
     context.beginPath();
     context.moveTo(centre.x, centre.y);
-    context.lineTo(centre.x, tipY);
+    context.lineTo(tip.x, tip.y);
     context.stroke();
 
     context.setLineDash([]);
+    const base = {
+      x: tip.x - screenDirection.x * arrowHeadLength,
+      y: tip.y - screenDirection.y * arrowHeadLength,
+    };
+    const perpendicular = {
+      x: -screenDirection.y * arrowHeadWidth,
+      y: screenDirection.x * arrowHeadWidth,
+    };
     context.beginPath();
-    context.moveTo(centre.x - arrowHeadWidth, tipY - direction * arrowHeadLength);
-    context.lineTo(centre.x, tipY);
-    context.lineTo(centre.x + arrowHeadWidth, tipY - direction * arrowHeadLength);
+    context.moveTo(base.x + perpendicular.x, base.y + perpendicular.y);
+    context.lineTo(tip.x, tip.y);
+    context.lineTo(base.x - perpendicular.x, base.y - perpendicular.y);
     context.stroke();
 
-    const fontSize = Math.max(
-      14,
-      Math.min(22, camera.pixelsPerMetre * 0.5),
-    );
+    const fontSize = calculateInitialVelocityTextSize(camera.pixelsPerMetre);
     context.font = `700 ${fontSize}px "KG Primary Penmanship Alt", sans-serif`;
-    context.textAlign = "left";
-    context.textBaseline = "middle";
-    context.fillText(
-      `${annotation.speedText} m s⁻¹`,
-      centre.x + 13,
-      (centre.y + tipY) / 2,
-    );
+    if (annotation.kind === "angle") {
+      renderAngleVelocityNotation(
+        context,
+        centre,
+        tip,
+        screenDirection,
+        camera,
+        annotation,
+        fontSize,
+      );
+    } else if (annotation.kind === "components") {
+      renderComponentVelocityNotation(
+        context,
+        centre,
+        tip,
+        screenDirection,
+        annotation,
+        fontSize,
+      );
+    } else {
+      renderSpeedVelocityNotation(
+        context,
+        centre,
+        tip,
+        screenDirection,
+        annotation,
+        camera,
+      );
+    }
     context.restore();
   }
+}
+
+function renderSpeedVelocityNotation(
+  context: CanvasRenderingContext2D,
+  centre: { x: number; y: number },
+  tip: { x: number; y: number },
+  screenDirection: Vec2,
+  annotation: SpeedInitialVelocityAnnotation,
+  camera: Camera,
+): void {
+  let labelNormal = {
+    x: screenDirection.y,
+    y: -screenDirection.x,
+  };
+  if (
+    labelNormal.y > 0 ||
+    (Math.abs(labelNormal.y) < 0.2 && labelNormal.x < 0)
+  ) {
+    labelNormal = { x: -labelNormal.x, y: -labelNormal.y };
+  }
+  const anchor = {
+    x:
+      centre.x +
+      (tip.x - centre.x) * 0.58 +
+      labelNormal.x * camera.pixelsPerMetre * 0.45,
+    y:
+      centre.y +
+      (tip.y - centre.y) * 0.58 +
+      labelNormal.y * camera.pixelsPerMetre * 0.45,
+  };
+  context.textAlign = labelNormal.x < -0.2
+    ? "right"
+    : labelNormal.x > 0.2
+      ? "left"
+      : "center";
+  context.textBaseline = "middle";
+  context.fillText(`${annotation.speedText} m s⁻¹`, anchor.x, anchor.y);
+}
+
+function renderAngleVelocityNotation(
+  context: CanvasRenderingContext2D,
+  centre: { x: number; y: number },
+  tip: { x: number; y: number },
+  screenDirection: Vec2,
+  camera: Camera,
+  annotation: AngleInitialVelocityAnnotation,
+  fontSize: number,
+): void {
+  const referenceDirection = {
+    x: annotation.referenceDirection.x,
+    y: -annotation.referenceDirection.y,
+  };
+  const referenceAngle = Math.atan2(referenceDirection.y, referenceDirection.x);
+  const rawSweep =
+    -annotation.rotationDirection * annotation.angleDegrees * Math.PI / 180;
+  const sweep = normaliseDiagramArcSweep(rawSweep);
+  const arcRadius =
+    INITIAL_VELOCITY_ANGLE_ARC_RADIUS_METRES * camera.pixelsPerMetre;
+
+  context.save();
+  context.lineWidth = camera.pixelsPerMetre * 0.055;
+  if (annotation.angleMarker === "arc") {
+    context.setLineDash([
+      camera.pixelsPerMetre * 0.15,
+      camera.pixelsPerMetre * 0.15,
+    ]);
+    context.beginPath();
+    context.moveTo(centre.x, centre.y);
+    context.lineTo(
+      centre.x + referenceDirection.x * arcRadius,
+      centre.y + referenceDirection.y * arcRadius,
+    );
+    context.stroke();
+
+    context.setLineDash([]);
+    if (Math.abs(sweep) > 1e-9) {
+      context.beginPath();
+      context.arc(
+        centre.x,
+        centre.y,
+        arcRadius,
+        referenceAngle,
+        referenceAngle + sweep,
+        sweep < 0,
+      );
+      context.stroke();
+    }
+
+    const angleLabelRadius = arcRadius - fontSize * 0.8;
+    const angleText = `${annotation.angleText}°`;
+    const measurementSide = Math.sign(sweep) || -annotation.rotationDirection;
+    const narrowLabelOffset = Math.atan(
+      (context.measureText(angleText).width / 2 +
+        camera.pixelsPerMetre * 0.08) /
+        angleLabelRadius,
+    );
+    const angleLabelDirection = isNarrowInitialVelocityAngle(
+      annotation.angleDegrees,
+    )
+      ? referenceAngle - measurementSide * narrowLabelOffset
+      : referenceAngle + sweep / 2;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText(
+      angleText,
+      centre.x + Math.cos(angleLabelDirection) * angleLabelRadius,
+      centre.y + Math.sin(angleLabelDirection) * angleLabelRadius,
+    );
+  }
+
+  const arcSectorDirection = referenceAngle + sweep / 2;
+  const arcMidpointDirection = {
+    x: Math.cos(arcSectorDirection),
+    y: Math.sin(arcSectorDirection),
+  };
+  const arcSide = Math.sign(
+    screenDirection.x * arcMidpointDirection.y -
+      screenDirection.y * arcMidpointDirection.x,
+  ) || 1;
+  const oppositeNormal = {
+    x: screenDirection.y * arcSide,
+    y: -screenDirection.x * arcSide,
+  };
+  const speedAnchor = {
+    x:
+      centre.x +
+      (tip.x - centre.x) * 0.58 +
+      oppositeNormal.x * camera.pixelsPerMetre * 0.45,
+    y:
+      centre.y +
+      (tip.y - centre.y) * 0.58 +
+      oppositeNormal.y * camera.pixelsPerMetre * 0.45,
+  };
+  context.textAlign = oppositeNormal.x < -0.2 ? "right" : oppositeNormal.x > 0.2 ? "left" : "center";
+  context.fillText(`${annotation.speedText} m s⁻¹`, speedAnchor.x, speedAnchor.y);
+  context.restore();
+}
+
+function renderComponentVelocityNotation(
+  context: CanvasRenderingContext2D,
+  centre: { x: number; y: number },
+  tip: { x: number; y: number },
+  screenDirection: Vec2,
+  annotation: ComponentInitialVelocityAnnotation,
+  fontSize: number,
+): void {
+  const rowOffset = fontSize * 0.52;
+  const numberWidth = Math.max(
+    context.measureText(annotation.componentText.x).width,
+    context.measureText(annotation.componentText.y).width,
+  );
+  const innerPadding = fontSize * 0.32;
+  const bracketHeight = fontSize * 2.05;
+  const unitWidth = context.measureText("m s⁻¹").width;
+  const midpoint = {
+    x: centre.x + (tip.x - centre.x) * 0.55,
+    y: centre.y + (tip.y - centre.y) * 0.55,
+  };
+  const vectorWidth = numberWidth + innerPadding * 2;
+  const unitGap = fontSize * 0.32;
+  const labelClearance = fontSize * 0.65;
+  const fullLabelWidth = vectorWidth + unitGap + unitWidth;
+  const arrowCrossesLabelHeight = Math.abs(screenDirection.y) > 0.12;
+  const horizontalAvoidance = arrowCrossesLabelHeight
+    ? (screenDirection.x >= 0 ? -1 : 1) *
+      (fullLabelWidth / 2 + labelClearance)
+    : 0;
+  const anchor = {
+    x: midpoint.x + horizontalAvoidance - unitWidth / 2,
+    y: midpoint.y - bracketHeight / 2 - labelClearance,
+  };
+  const bracketTop = anchor.y - bracketHeight / 2;
+  const bracketBottom = anchor.y + bracketHeight / 2;
+  const left = anchor.x - numberWidth / 2 - innerPadding;
+  const right = anchor.x + numberWidth / 2 + innerPadding;
+  const curveInset = fontSize * 0.32;
+
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillText(annotation.componentText.x, anchor.x, anchor.y - rowOffset);
+  context.fillText(annotation.componentText.y, anchor.x, anchor.y + rowOffset);
+
+  context.lineWidth = fontSize * 0.11;
+  context.setLineDash([]);
+  context.beginPath();
+  context.moveTo(left + curveInset, bracketTop);
+  context.bezierCurveTo(
+    left,
+    bracketTop + bracketHeight * 0.16,
+    left,
+    bracketBottom - bracketHeight * 0.16,
+    left + curveInset,
+    bracketBottom,
+  );
+  context.moveTo(right - curveInset, bracketTop);
+  context.bezierCurveTo(
+    right,
+    bracketTop + bracketHeight * 0.16,
+    right,
+    bracketBottom - bracketHeight * 0.16,
+    right - curveInset,
+    bracketBottom,
+  );
+  context.stroke();
+
+  context.textAlign = "left";
+  context.fillText("m s⁻¹", right + unitGap, anchor.y);
+}
+
+function normaliseDiagramArcSweep(sweep: number): number {
+  const fullTurn = Math.PI * 2;
+  if (Math.abs(sweep) <= fullTurn) return sweep;
+  const remainder = sweep % fullTurn;
+  return Math.abs(remainder) < 1e-9 ? Math.sign(sweep) * fullTurn : remainder;
 }
 
 function renderGround(
@@ -355,7 +783,7 @@ function renderGround(
   const fillStartY = Math.max(0, Math.min(camera.viewportHeight, groundY));
 
   context.save();
-  context.fillStyle = mixColourWithWhite("#dedbd3", whiteMix);
+  context.fillStyle = mixColourWithWhite("#cbc8c0", whiteMix);
   context.fillRect(
     0,
     fillStartY,
@@ -393,16 +821,11 @@ function renderParticle(
   context: CanvasRenderingContext2D,
   particle: ParticleState,
   particleCount: number,
-  groundEnabled: boolean,
-  groundHeight: number,
   camera: Camera,
   whiteMix: number,
 ): void {
   const point = worldToScreen(particle.position, camera);
-  const { centre, radius } = getRenderedParticleGeometry(point, camera, {
-    groundEnabled,
-    groundHeight,
-  });
+  const { centre, radius } = getRenderedParticleGeometry(point, camera);
 
   context.save();
   const outlineWidth = 3;

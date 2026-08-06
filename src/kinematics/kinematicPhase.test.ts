@@ -47,6 +47,7 @@ describe("determineActiveKinematicPhase", () => {
 
   it("starts a zero-motion grounded phase at impact after contact", () => {
     const particle = createParticle("grounded", { x: 0, y: 10 });
+    particle.initialVelocity.x = 3;
     const impactTime = calculateGroundImpactTime(10, 0, 9.8, 0);
     if (impactTime === null) throw new Error("Expected an impact time.");
     const currentTime = 3;
@@ -60,7 +61,7 @@ describe("determineActiveKinematicPhase", () => {
     expect(phase).toEqual({
       kind: "grounded",
       startTime: impactTime,
-      initialPosition: { x: 0, y: 0 },
+      initialPosition: { x: 3 * impactTime, y: 0 },
       initialVelocity: { x: 0, y: 0 },
       acceleration: { x: 0, y: 0 },
     });

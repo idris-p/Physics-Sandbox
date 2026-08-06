@@ -1,814 +1,585 @@
-# Physics Sandbox — Kinematics Phase Implementation Report
+# Physics Sandbox — 2D Kinematics Phase Report
 
-## 1. Purpose of this report
+## 1. Report purpose
 
-This report records the work completed during the first kinematics teaching phase of the Physics Sandbox.
+This report records the complete state of the educational 2D kinematics phase implemented in the Physics Sandbox.
 
-The previous milestone already provided the scene foundation: metre-based world coordinates, an HTML Canvas grid, point particles, vertical gravity, optional ground, analytical state reconstruction, panning, zooming, placement, selection, dragging, deletion, and global time navigation.
+The phase builds on the original metre-based canvas, point-particle model, gravity, ground, camera, selection, and deterministic time reconstruction. It extends that foundation into a general analytical 2D constant-acceleration teaching tool with editable Cartesian and polar initial velocity, coordinate conventions, exact kinematic working, SUVAT, horizontal-motion analysis, motion graphs, mathematical scene annotations, and analytical playback events.
 
-This phase extended that foundation with:
-
-- editable initial vertical velocity;
-- a global educational positive-direction setting;
-- live `s`, `u`, `v`, `a`, and `t` inspection;
-- all five standard constant-acceleration SUVAT relationships;
-- exact decimal, fraction, and surd-aware mathematical presentation;
-- enlarged calculation views;
-- initial-velocity diagram annotations;
-- exact pause events at greatest height and ground contact;
-- selection and properties-panel refinements;
-- timer and playback synchronization improvements.
-
-The project remains a vertical-motion educational sandbox. No horizontal motion, force model, energy model, symbolic solver, collision system, or general rigid-body physics was introduced.
+The result remains a mechanics diagram and teaching application rather than a game-physics engine. World mechanics, exact mathematical provenance, rendering, and UI state remain separate concerns.
 
 ## 2. Phase outcome
 
-The application now connects the visual scene to an inspectable A-level kinematics model.
+The application now supports particles moving simultaneously in horizontal and vertical directions:
 
-A user can:
+```text
+x(t) = x₀ + uₓt
+y(t) = y₀ + uᵧt − 1/2 gt²
+vₓ(t) = uₓ
+vᵧ(t) = uᵧ − gt
+```
 
-1. select a particle;
-2. enter its initial vertical velocity;
-3. choose whether Up or Down is globally positive;
-4. inspect its signed displacement, initial velocity, current velocity, acceleration, and time;
-5. expand a SUVAT section containing numerical substitutions and answers;
-6. open any SUVAT calculation in a large modal;
-7. retain exact entered decimals while seeing appropriate generated fractions and surds;
-8. play the scene and pause exactly at a selected particle's greatest height or ground contact.
+When the optional horizontal ground is enabled, the first point-position contact is found analytically. At contact the mathematical particle is exactly on the ground. After contact the particle remains at the impact point with zero velocity and acceleration; there is no bounce, restitution, frictional deceleration, or rendered-radius collision offset.
 
-World mechanics and educational presentation remain separate. Changing the displayed positive direction never changes the particle's real trajectory.
+A user can now:
 
-## 3. Architecture added during this phase
+- give every particle a 2D initial velocity in Cartesian or polar form;
+- change the displayed positive x and y directions;
+- choose the reference axis and clockwise/anticlockwise angle convention;
+- inspect horizontal or vertical `s`, `u`, `v`, `a`, and `t` values;
+- inspect exact horizontal-motion and SUVAT calculations;
+- view live displacement–time and velocity–time graphs;
+- enlarge graphs and calculations without losing mathematical quality;
+- pause analytically at ground contact, greatest height, a chosen vertical position, or a particle coincidence;
+- inspect exact fractions, surds, and trigonometric expressions with three-decimal hover values.
 
-The phase introduced focused modules instead of placing kinematics logic in the DOM or renderer:
+## 3. Architecture
+
+The implementation is split into focused modules:
 
 ```text
 src/
+  model/
+    Particle.ts
+    Scene.ts
+    SimulationSettings.ts
+
+  physics/
+    calculateParticleState.ts
+    calculateSceneState.ts
+
   kinematics/
+    angleConvention.ts
     exactDisplay.ts
+    horizontalKinematics.ts
+    kinematicPhase.ts
+    motionGraphs.ts
+    particleKinematics2D.ts
+    polarVelocityExact.ts
     signConvention.ts
     suvat.ts
     verticalKinematics.ts
 
   simulation/
+    autoPauseTimeDisplay.ts
     editInitialConditions.ts
+    particleCoincidence.ts
+    phaseIntervalNote.ts
     playback.ts
 
   canvas/
+    greatestHeightAnnotation.ts
     initialVelocityAnnotation.ts
-    selectionPulse.ts
+    particleGeometry.ts
+    renderer.ts
+    verticalTargetAnnotation.ts
 
   ui/
-    mathMarkup.ts
     controls.ts
+    exactValueTooltip.ts
+    mathMarkup.ts
+    motionGraphCanvas.ts
 ```
 
-Responsibilities remain separated:
+The separation is deliberate:
 
-- `model/` stores persistent initial conditions and settings;
-- `physics/` reconstructs physical particle states;
-- `kinematics/` converts physical states into educational scalar values and fixed SUVAT results;
-- `simulation/` handles initial-condition edits and playback event times;
-- `canvas/` renders diagram annotations and scene selection;
-- `ui/` validates fields, builds MathML, and updates controls;
-- `main.ts` composes the layers and owns the one global scene time.
+- persistent initial conditions and per-particle options live in `model/`;
+- physical world states are reconstructed in `physics/`;
+- scalar conventions, exact mathematics, equations, and graph plans live in `kinematics/`;
+- playback event scheduling lives in `simulation/`;
+- diagram geometry and Canvas drawing live in `canvas/`;
+- validation, MathML, controls, dialogs, and graph UI live in `ui/`;
+- `main.ts` composes these systems around one global scene time.
 
-No DOM or Canvas dependency was added to the pure sign-convention, kinematics, exact-display, SUVAT, or playback calculations.
+The analytical modules do not depend on DOM or Canvas APIs.
 
-## 4. Particle model extensions
+## 4. Particle and settings model
 
-Each persistent particle now stores:
+Each particle now retains:
+
+- a stable ID and mass;
+- initial world position;
+- initial world velocity vector;
+- literal Cartesian velocity input text and the conventions under which it was entered;
+- current velocity editor mode;
+- polar speed/angle text and its angle convention when polar input is the source;
+- per-particle pause options;
+- exact entered data for the configurable vertical target.
+
+The per-particle pause flags are:
 
 ```ts
-interface Particle {
-  id: string;
-  mass: number;
-  pauseAtGreatestHeight: boolean;
-  pauseAtGroundContact: boolean;
-  initialPosition: Vec2;
-  initialVelocity: Vec2;
-  initialVelocityInput: {
-    text: string;
-    positiveDirection: "up" | "down";
-  };
-}
+pauseAtGroundContact
+pauseAtGreatestHeight
+pauseAtVerticalTarget
+pauseAtParticleCoincidence
 ```
 
-New particles default to:
-
-```text
-mass = 1 kg
-initial velocity = 0 m s^-1
-pause at greatest height = off
-pause at ground contact = off
-```
-
-Horizontal initial velocity remains exactly zero. There is still no horizontal-motion control.
-
-The preserved `initialVelocityInput` metadata is display provenance. It records both the literal decimal the user typed and the sign convention under which it was entered. Physics continues to use the numeric world-y velocity.
-
-## 5. Editable initial vertical velocity
-
-Particle Properties now contains an editable Initial velocity field with units `m s^-1`.
-
-Validation accepts:
-
-- positive values;
-- negative values;
-- zero;
-- at most three decimal places.
-
-Examples include `4`, `-2.5`, `0`, and `3.125`.
-
-Invalid input restores the previous valid text. Scientific notation and incomplete decimal syntax are not accepted.
-
-The entered sign follows the current global educational direction:
-
-```text
-Up positive:    displayed u = world uy
-Down positive:  displayed u = -world uy
-```
-
-`editParticleInitialVerticalVelocity` returns an updated particle without mutating the original object. It also explicitly restores horizontal velocity to zero.
-
-Changing positive direction later does not rewrite the physical initial velocity. It only changes the displayed sign. The original entered decimal is negated textually when necessary, so `2.5` becomes `-2.5`, not a fraction or a floating-point expansion.
-
-Following later product direction, changing initial velocity does **not** reset global time. The selected particle is immediately reconstructed at the existing scene time from its new initial condition.
-
-## 6. Global positive direction
-
-Scene settings now store:
+Global settings retain the numeric and entered gravity plus:
 
 ```ts
-type VerticalPositiveDirection = "up" | "down";
+positiveX: "left" | "right"
+positiveY: "up" | "down"
+angleReferenceAxis:
+  | "positive-x"
+  | "negative-x"
+  | "positive-y"
+  | "negative-y"
+angleDirection: "anticlockwise" | "clockwise"
 ```
 
-The default is Up. The setting is global and lives in Scene Properties, so every particle uses the same educational convention.
+The world itself never changes orientation: world positive x remains right and world positive y remains up. Conventions alter educational scalar representation only.
 
-The compact selector uses up/down arrow icons:
+## 5. Initial velocity editing
 
-- the selected direction uses the same green as enabled toggles;
-- the unselected direction uses the pencil-grey title colour;
-- changing direction preserves all world positions, velocities, accelerations, and trajectories.
+Particle Properties provides two input modes.
 
-World coordinates remain fixed:
+### Cartesian mode
+
+The user enters independent `uₓ` and `uᵧ` components. Each component:
+
+- accepts signed values with at most three decimal places;
+- is interpreted using the current positive direction for that axis;
+- preserves its literal input text and entry convention;
+- updates world velocity without changing the other component.
+
+### Polar mode
+
+The user enters a positive speed and an angle in `(-180°, 180°]`. The angle is interpreted using the currently selected reference axis and rotation direction.
+
+Changing angle-measurement settings later does not rotate any velocity vector. Instead, each polar velocity is re-expressed from the new reference axis so every arrow continues to point in the same world direction.
+
+Changing between Cartesian and polar editor modes is reversible. It changes only the visible editor representation and never resets or numerically rebuilds the world velocity.
+
+Polar-to-Cartesian conversion displays exact rational, surd, or trigonometric components. Cartesian-to-polar conversion derives the exact magnitude from `uₓ² + uᵧ²` and uses a quadrant-aware `arctan(...)` expression whenever the angle is not an exact axis angle. The original authoritative input provenance remains attached to the particle, so repeatedly switching modes does not degrade exact values.
+
+Symbolic converted fields use the same dual exact/edit interaction as the timer. Their normal state is MathML with stacked fractions, radicals, trig functions, or `arctan` as appropriate. Hovering shows the numerical value to three decimal places. Clicking the exact value replaces it with a selected three-decimal text input for editing; leaving it unchanged restores the exact form. Exact provenance is tracked per field, so editing one Cartesian component or one Polar value does not replace the untouched field's exact expression with its temporary decimal editor value. Integers and terminating decimals requiring at most three decimal places remain ordinary editable inputs and do not receive redundant exact-value behaviour.
+
+## 6. Coordinate and angle conventions
+
+All convention conversions are centralized.
+
+Horizontal and vertical world vectors are converted to educational scalars through `signConvention.ts`. Polar directions are converted to and measured from world vectors through `angleConvention.ts`.
+
+This ensures that changing any of the following does not alter the physical trajectory or event timing:
+
+- left/right positive x;
+- up/down positive y;
+- positive or negative x/y angle reference axis;
+- clockwise or anticlockwise angle measurement.
+
+Measured polar angles are normalized to `(-180°, 180°]`, cleaned around zero, and displayed to at most the supported input precision.
+
+## 7. Analytical 2D mechanics
+
+The physics layer reconstructs every state directly from the particle's initial conditions and global time. It does not accumulate Euler steps.
+
+Before ground contact:
+
+- horizontal acceleration is zero;
+- horizontal velocity is constant;
+- horizontal displacement is linear in time;
+- vertical acceleration is `−g` in world coordinates;
+- vertical velocity and position follow constant-acceleration equations.
+
+Ground impact time solves the vertical quadratic analytically. Impact x-position is then:
 
 ```text
-+x = right
-+y = up
-gravity acceleration.y = -g
+x_impact = x₀ + uₓ t_impact
 ```
 
-The pure conversion boundary is centralized:
+At the exact positive contact instant, the free-flight limiting velocity and acceleration remain available for teaching calculations. Times after contact belong to a grounded phase with zero displacement from the phase start, zero velocity, and zero acceleration.
 
-```ts
-worldVerticalToScalar(worldY, positiveDirection)
-scalarToWorldVertical(value, positiveDirection)
-```
+Rendered particle radius is never used by the mechanics layer.
 
-The same conversion is used consistently for `s`, `u`, `v`, and `a`. Time is unsigned and unaffected.
+## 8. Kinematic phases
 
-## 7. Derived vertical kinematics
+`determineActiveKinematicPhase` selects the interval of constant acceleration relevant to the current time.
 
-`calculateVerticalKinematicState` derives a pure educational state:
+Current phases are:
 
-```ts
-interface VerticalKinematicState {
-  s: number;
-  u: number;
-  v: number;
-  a: number;
-  t: number;
-}
-```
+- `free-flight`, beginning at scene time zero;
+- `grounded`, beginning at the exact first-contact time.
 
-Before deriving these values, `determineActiveKinematicPhase` selects the current interval of constant acceleration. A phase stores its start time, starting position, starting velocity, and constant acceleration. The current implementation has only free-flight and grounded phases.
+Kinematics, graphs, and equations use phase-relative values. This prevents a post-impact zero-acceleration analysis from incorrectly mixing values from the earlier gravitational phase.
 
-The quantities are defined relative to that phase:
+When a phase starts after `t = 0`, a yellow acceleration-change note shows:
 
-- `s`: current world-y position minus phase-start world-y position, converted to the selected sign convention;
-- `u`: phase-start world-y velocity, converted to the selected sign convention;
-- `v`: current calculated world-y velocity, converted to the selected sign convention;
-- `a`: phase acceleration, converted to the selected sign convention;
-- `t`: global scene time minus phase start time.
+- the exact phase-start time;
+- the exact current global time;
+- the subtraction producing phase elapsed time.
 
-Displacement is not distance travelled. A particle that rises and then returns to its starting height has `s = 0`.
+The note never substitutes an approximation for an available fraction, surd, or trigonometric value. Symbolic values expose a `(3 d.p.)` hover result.
 
-The Kinematics section updates when:
+## 9. 2D Kinematics inspector
 
-- global time changes;
-- playback advances;
-- playback reaches its exact final pause frame;
-- initial velocity changes;
-- gravity changes;
-- ground state changes;
-- positive direction changes;
-- a different particle is selected.
+The analysis panel can switch between Vertical and Horizontal components.
 
-A synchronization defect was fixed in which the timer could stop exactly at `1 s` while Particle Properties retained the preceding animation-frame time such as `0.997 s`. The final playback frame now refreshes the selected particle's complete inspector, so timer, scene state, Kinematics, and SUVAT all use the same global time.
-
-## 8. Particle Properties analysis layout
-
-Particle Properties remains contextual and appears only while a particle is selected.
-
-Its non-analysis fields show:
-
-- current mathematical `x` position;
-- current mathematical `y` position;
-- editable mass;
-- editable initial vertical velocity;
-- grouped event-pause settings.
-
-Editable fields use white backgrounds. Read-only calculated values use the same pencil-grey fill as panel titles.
-
-The Kinematics header controls both Kinematics and SUVAT:
-
-- the combined analysis is collapsed initially;
-- the arrow points down while collapsed and up while expanded;
-- collapsing Kinematics also hides SUVAT;
-- the expansion state is preserved when switching particles;
-- the inspector scroll level is preserved when switching particles;
-- opening and closing the section does not introduce horizontal content movement.
-
-The panel reserves a fixed scrollbar gutter. Borders and fills continue through that gutter even when the native scrollbar is absent, and the scrollbar is clipped within the rounded panel below the fixed title. This prevents content reflow and avoids stepped or misaligned dividers.
-
-Kinematics rows use a compact centered layout:
+For either axis, it derives phase-relative:
 
 ```text
-symbol | exact value | unit
+s — signed displacement
+u — phase-start velocity
+v — current velocity
+a — phase acceleration
+t — phase elapsed time
 ```
 
-The `s`, `u`, `v`, `a`, and `t` symbols occupy a consistent narrow column. Value boxes and unit columns align with the fields above rather than being pushed to opposite sides of the inspector.
+The selected x/y convention is applied consistently to `s`, `u`, `v`, and `a`; time remains unsigned.
 
-Each Kinematics box displays one exact preferred value. It does not place a secondary approximation beneath the value.
+Horizontal analysis uses the same data model but hides redundant `u` and `a` rows where the compact presentation does not need them. The horizontal equation section uses:
 
-## 9. SUVAT implementation
+```text
+s = vt
+```
 
-`src/kinematics/suvat.ts` centrally defines the five standard relationships:
+Vertical analysis presents all five standard SUVAT relationships.
+
+The value boxes and timer field were widened to improve exact-value readability. Text size remains normal for trig expressions such as `10 sin 53°`; compact text is used only where a true stacked fraction needs extra vertical room.
+
+Values that should be mathematically zero at event boundaries are canonicalized to zero. For example, same-height ground contact displays `s = 0` rather than a long expression that merely evaluates to zero, and greatest height displays `v = 0` directly.
+
+## 10. SUVAT calculations
+
+The vertical section implements:
 
 ```text
 v = u + at
-s = ut + 1/2 at^2
-s = 1/2 (u + v)t
-v^2 = u^2 + 2as
-s = vt - 1/2 at^2
+s = ut + 1/2 at²
+s = 1/2(u + v)t
+v² = u² + 2as
+s = vt − 1/2 at²
 ```
 
-Each definition contains:
+Each result contains:
 
-- a stable typed equation ID;
-- its formula;
-- expected current-state quantity;
-- numerical evaluator;
-- substitution builder;
-- result unit;
-- exact display calculation.
+- a stable equation ID;
+- the formula;
+- exact substitution using current known values;
+- the calculated result and expected kinematic quantity;
+- units;
+- exact final-value lines;
+- optional square-root working for the no-time equation.
 
-For a valid interval, each card shows:
+For `v² = u² + 2as`, taking the square root displays `±` because the equation alone admits both velocity signs. The Kinematics `v` box continues to show the physically relevant signed velocity for the selected time.
 
-1. the formula;
-2. substitution using the particle's current known values;
-3. the exact or preferred final answer;
-4. a rounded decimal line only when required.
+Calculations are fixed educational evaluations, not a general symbolic equation solver.
 
-This is a fixed, fully known numerical analysis. It does not rearrange equations, solve arbitrary unknowns, parse user algebra, or use a computer algebra system.
+## 11. Exact-value system
 
-## 10. Phase-aware constant-acceleration analysis
+`exactDisplay.ts` separates numerical value from mathematical display provenance.
 
-SUVAT now analyses the active constant-acceleration phase rather than the complete scene history.
+Supported exact forms include:
 
-Current phase rules:
+- literal entered decimals;
+- reduced rational numbers backed by `bigint`;
+- square roots and rational multiples of surds;
+- exact trigonometric monomials;
+- preserved exact expressions when a compact algebraic representation is needed.
 
-- ground disabled: free flight begins at scene `t = 0` with acceleration `-g`;
-- before first ground contact: the active phase is free flight from `t = 0`;
-- exactly at a positive first-contact time: the active phase is still free flight;
-- after positive-time contact: the active grounded phase begins at the exact impact time;
-- initially resting on ground: the grounded phase begins at `t = 0`;
-- an upward launch from ground stays in free flight through the exact return contact and becomes grounded only afterward.
+Exact rational arithmetic is used for addition, subtraction, multiplication, division, and squaring. Algebraic operations simplify compatible values and cancel exact terms before falling back to numerical presentation.
 
-For a grounded phase, Kinematics and all five SUVAT equations use `s = 0`, `u = 0`, `v = 0`, `a = 0`, and phase-relative elapsed time. An earlier acceleration change no longer invalidates later analysis.
+This is what allows expressions such as a projectile's same-height displacement to simplify to exactly zero instead of retaining two long cancelling terms.
 
-When a phase starts after scene `t = 0`, one pencil-yellow note appears above the Kinematics values. Its three lines identify the acceleration-change time, global interval endpoints, and subtraction producing phase elapsed time. The notice is not repeated inside SUVAT. No invalid-SUVAT warning is shown.
+## 12. Exact trigonometric values
 
-The ground-impact state was refined for this teaching boundary:
+Polar components preserve exact trigonometric structure.
 
-- at exact positive-time contact, the mathematical point is exactly on the ground;
-- limiting impact velocity and gravitational acceleration remain available;
-- only times after contact use `v = 0` and `a = 0`;
-- a particle launched upward from the ground is treated as free moving until it returns.
+Special angles throughout the full circle use exact rational or surd values, including the familiar 0°, 30°, 45°, 60°, 90° families and their signed equivalents in other quadrants.
 
-The rendered particle radius remains irrelevant to all contact and phase calculations.
-
-## 11. Exact numerical provenance
-
-Numerical mechanics and display formatting are separate.
-
-Physics calculations continue to use unrounded JavaScript numbers. The display layer additionally carries:
-
-```ts
-interface Rational {
-  numerator: bigint;
-  denominator: bigint;
-}
-
-interface DisplayValue {
-  value: number;
-  exact?: Rational;
-  enteredText?: string;
-}
-```
-
-This distinguishes:
-
-1. literal user-entered decimals;
-2. exact formula constants;
-3. exact generated rational values;
-4. fallback numerical approximations;
-5. rounded final-answer lines.
-
-The application preserves literal text for:
-
-- gravity;
-- each particle's initial vertical velocity;
-- manually entered scene time.
-
-Therefore:
+For a non-special entered angle such as 53°, expressions remain symbolic:
 
 ```text
-entered 2.5   remains 2.5
-entered 0.333 remains 0.333
-entered 9.80  remains 9.80
+uᵧ = 10 sin 53°
+uₓ = 10 cos 53°
 ```
 
-Entered decimals are never reinterpreted for display as simpler fractions. Internally, their exact base-ten rational equivalents may be used to derive later exact values.
+These expressions are carried through compatible SUVAT, graph-coordinate, greatest-height, and auto-pause calculations. Exact algebra handles products such as squared trig components and cancels matching terms where possible.
 
-Formula constants such as `1/2` remain exact and display as fractions.
+## 13. Fractions, surds, MathML, and hover values
 
-## 12. Generated decimal and fraction rules
+Fractions are rendered as actual stacked fractions, not slash-delimited plain text. Surds use native mathematical radical layout. Superscripts, signs, units, and equation grouping are produced through the MathML builder in `mathMarkup.ts`.
 
-Derived results use conservative exact formatting:
+Exact values remain primary in:
 
-- exact terminating decimals needing no more than three decimal places display as decimals;
-- longer exact values display as decimals only when their **reduced denominator itself** is a power of ten;
-- otherwise an exact reduced fraction is preferred;
-- simple generated fractions are detected only below conservative numerator and denominator limits;
-- ugly or unreliable fractions fall back to a compact generated decimal;
-- intermediate values are never rounded to three decimal places for further calculation.
+- Kinematics boxes;
+- SUVAT and horizontal-motion calculations;
+- the timer at exact pause events;
+- acceleration-change notes;
+- canvas measurements;
+- enlarged graph-coordinate annotations.
 
-The current conservative limits are:
+When an exact value is a fraction, surd, trig expression, or other symbolic form, hovering exposes its numerical value rounded to three decimal places followed by `(3 d.p.)`.
 
-```text
-maximum inferred denominator = 10,000
-maximum inferred numerator   = 99,999
-fallback working precision   = 5 decimal places
-```
+No approximation is printed directly in greatest-height or comparable canvas annotations. The tooltip is the only approximate companion to those exact values.
 
-Fallback working decimals use an approximation sign when information was discarded.
+## 14. Enlarged calculation dialog
 
-Exact rational values remain attached to derived results and are reused in subsequent SUVAT equations. A displayed `1/3` is carried forward as `1/3`; its rounded `0.333` representation never becomes a later operand.
+Every equation card can be opened by pointer or keyboard into a large native dialog.
 
-## 13. Final-answer rules
+The dialog redraws the same exact formula, substitution, result, units, and square-root working at a larger size. It reuses the existing calculation data rather than maintaining a second calculation path.
 
-Final SUVAT answers follow explicit metadata rather than inferring rounding from the number of visible decimal places.
+It can close through its close button, backdrop, or Escape and does not change selection, time, graph state, or inspector expansion.
 
-Rules:
+## 15. Initial-velocity scene annotations
 
-- an exact terminating decimal within three places appears once with no rounding annotation;
-- if a longer exact result has a reduced power-of-ten denominator, its complete exact decimal appears first;
-- otherwise a longer exact rational appears as a fraction first;
-- a three-decimal approximation follows only when required;
-- `(3 d.p.)` appears only when rounding actually lost information;
-- genuinely rounded results retain all three places, including a final zero;
-- rounded values are presentation only and are never fed into later calculations.
+At `t = 0`, each non-zero initial velocity is drawn as a dashed 2.5 m direction arrow from the particle centre.
 
-Examples:
+Polar input displays:
 
-```text
-v = 4.25 m s^-1
-```
+- the entered speed;
+- a reference ray and signed directional arc for non-right-angle cases;
+- the absolute magnitude of the entered angle in the visible label.
 
-and:
+For every multiple of 90°, including 0°, ±90°, and 180°, the angle arc, reference marker, and angle value are omitted entirely. No right-angle square is drawn.
 
-```text
-s = 10/3 m
-  = 3.333 m (3 d.p.)
-```
+Cartesian input displays:
 
-The no-time equation receives special treatment:
+- a two-component column vector when both components are non-zero;
+- only the speed magnitude when either component is zero.
 
-```text
-v^2 = u^2 + 2as
-```
+Changing x/y signs or the angle convention updates labels and references while keeping the arrow pointed along the same world velocity.
 
-Its `v^2` answer remains exact. A separate line then takes the signed square root using the known direction of `v`. If the root simplifies to an exact decimal within three places, that decimal is used. Otherwise the exact fraction or surd of a fraction is retained before any necessary decimal approximation.
+## 16. Greatest-height and vertical-target annotations
 
-## 14. Kinematics fractions and surds
+When an enabled greatest-height pause triggers, the scene draws an exact vertical measurement for each triggering particle.
 
-Kinematics value boxes use the same exact-value metadata as SUVAT.
+With ground enabled, the reference is the mathematical ground height. Without ground, the reference is the particle's initial y-position. The measurement is calculated from point positions only.
 
-They can display:
+The dimension line is offset 0.75 m horizontally from the particle centre. Its perpendicular construction accounts for the rendered circle only when deciding where to begin drawing, never when calculating the height.
 
-- literal user-entered decimals;
-- generated terminating decimals;
-- stacked exact fractions;
-- signed square roots;
-- square roots whose radicands are exact fractions.
+The label uses an exact rational, surd, or trig-derived value and never displays an inline approximation.
 
-The `v` field uses a clean exact decimal when the value can be expressed exactly within three decimal places. For example, a value equivalent to `-sqrt(21609/62500)` simplifies to `-0.588` and is shown as that exact decimal.
+The configurable vertical-position pause uses the same measurement style:
 
-When no such compact exact decimal exists, the box retains a fraction or surd rather than inserting a rounded approximation. Box heights and math-aware layout accommodate vertical fractions and stretched radicals.
+- with ground enabled, the input is a height above ground;
+- without ground, it is signed vertical displacement from the initial position.
 
-## 15. Mathematical typesetting
+## 17. Motion graphs
 
-SUVAT and exact Kinematics values use native MathML created by `src/ui/mathMarkup.ts`.
+The analysis panel contains, in order:
 
-The renderer supports:
+1. a displacement–time graph;
+2. a velocity–time graph.
 
-- real stacked fractions with numerator above denominator;
-- true superscripts;
-- mathematical minus signs;
-- radicals with a vinculum stretching across the complete radicand;
-- exact units and `(3 d.p.)` annotations on aligned result lines.
+The graphs update in real time and draw the motion curve in red.
 
-MathML construction is a presentation concern only. The tokenizer recognizes the small notation vocabulary required by the five fixed equations; it is not a symbolic parser.
+Graph planning occurs before playback scaling is locked, so axes do not rescale from frame to frame. The selected interval is the current constant-acceleration phase, ending at ground contact where applicable or at a stable time window otherwise.
 
-The application's handwritten font remains the visible font for variables, numbers, units, and annotations. A mathematical font fallback supplies only the metrics needed by native fraction and radical constructions. This keeps the calculations visually consistent with the rest of the interface.
+Axis behaviour includes:
 
-Individual formula, substitution, result, and square-root lines never receive their own vertical scrollbar. Each line has enough height for fractions and surds. Horizontal overflow is allowed where a derivation is genuinely wider than the inspector, while vertical scrolling belongs to the containing panel or modal.
+- only ranges relevant to the actual motion;
+- no negative y-range when no negative value occurs;
+- a true zero axis when positive and negative values are both needed;
+- no duplicate line of negative labels at the plot bottom;
+- padding that keeps extrema near, but not touching, the plot edge;
+- gridlines at every tick;
+- pleasant tick intervals based on `1, 2, 4, 5 × 10ⁿ`, including `0.1`, `0.2`, `0.4`, `0.5`, `1`, `2`, `4`, `5`, `10`, and `20`;
+- no redundant zero label on the time axis.
 
-## 16. Enlarged calculation modal
+The compact graph canvas is clipped so neither the curve nor axes are obscured by the properties scrollbar.
 
-Every compact SUVAT equation card is interactive.
+## 18. Enlarged graph dialog
 
-It can be opened by:
+Clicking either graph opens a large dialog. The cursor uses a pointer/click affordance.
 
-- clicking the card;
-- focusing it and pressing Enter;
-- focusing it and pressing Space.
+The enlarged graph is redrawn at its own 1200 × 560 plotting resolution rather than scaling the compact bitmap, preserving line and text quality.
 
-The native dialog occupies most of the viewport and reuses the existing calculation result rather than recomputing through a second UI path.
+Enlarged graphs mark and annotate:
 
-It presents:
+- displacement turning points;
+- x-intercepts;
+- y-intercepts;
+- velocity zero crossings.
 
-- the same exact formula;
-- the same substitution;
-- the same final-value lines;
-- the same units and rounding metadata;
-- the same optional signed square-root working;
-- substantially larger MathML.
+Labels use the requested compact forms:
 
-The modal:
+- `(x, y)` for turning points;
+- `x` for x-intercepts;
+- `y` for y-intercepts.
 
-- uses the existing thick near-black rounded theme;
-- has a pencil-grey header;
-- has no shadow;
-- avoids excessive top and bottom calculation padding;
-- scrolls as a whole when required;
-- closes via its button, backdrop click, or Escape;
-- updates live if playback continues;
-- does not change scene time, selection, inspector scroll, or Kinematics expansion state.
+They are red, placed close to their mathematical point, and use placement logic that avoids covering the curve and axis tick labels. Exact coordinates retain fraction, surd, or trig form and provide three-decimal hover tooltips. The tooltip exists only in the foreground dialog layer; no duplicate tooltip is rendered behind the modal.
 
-## 17. Initial-velocity scene annotation
+## 19. Playback and time navigation
 
-At `t = 0`, every particle with non-zero initial vertical velocity receives a diagram annotation.
+There is one global scene time.
 
-The annotation:
+Playback advances continuously but clamps exactly to the earliest scheduled pause rather than waiting for a later animation frame. The selected particle's state, timer, Kinematics values, equations, graphs, and annotations all refresh on that same final frame.
 
-- is a dashed arrow;
-- starts at the rendered particle centre;
-- spans `2.5 m` in world-relative screen length;
-- points up for positive world-y initial velocity;
-- points down for negative world-y initial velocity;
-- labels the positive speed magnitude in `m s^-1`;
-- preserves the user's entered decimal text under sign-convention changes.
+Manual Previous and Next controls snap to adjacent interval boundaries instead of adding or subtracting from the current arbitrary time:
 
-The arrow is absent only when initial velocity equals zero. It disappears for every `t != 0`.
+- at a 1 s step, `3.72` moves to `3` or `4`;
+- at a 0.1 s step, it moves to `3.7` or `3.8`;
+- at a 0.01 s step, it moves to `3.72` or `3.73` as appropriate.
 
-Velocity annotations render before particles, so the particle fill and outline remain visually above the arrow at their overlap. The ordinary visual ground offset is used for presentation only and does not trigger any mechanics recalculation.
+If already on a boundary, navigation moves one complete interval. Time never moves below zero.
 
-### Greatest-height measurement
+The play button distinguishes playing, paused, and pause-pending states. Requesting a pause during playback schedules the next integer second.
 
-When playback pauses directly because one or more particles reach their enabled greatest-height event, each triggering particle receives a vertical dimension annotation to enabled ground.
+## 20. Per-particle pause options
 
-The measurement uses only mathematical geometry:
+The Particle Properties pause controls are evenly spaced and ordered:
 
-```text
-greatest height = particle position.y - ground height
-```
+1. Ground contact;
+2. Greatest height;
+3. Height above ground or vertical displacement;
+4. Particle coincidence.
 
-The vertical dashed double-headed dimension line is positioned `0.75 m` to the right of the particle centre. Its top perpendicular witness line begins at the particle's visual edge, reaches the arrow, and continues the same distance beyond it; the lower perpendicular end mark uses the same total span at mathematical ground. Its label uses the existing generated exact-value formatter. Exact fractions are drawn vertically with a fraction bar, while exact surds use a stretched radical and vinculum rather than plain slash or square-root text. Panning and zooming transform both endpoints through the camera.
-
-The annotation is backed by an explicit pause-event record rather than a time coincidence. It is absent during ordinary playback and manual navigation, cleared when playback resumes, hidden when time changes, and omitted if ground or the triggering particle is no longer available. Simultaneous earliest greatest-height events may display multiple measurements.
-
-## 18. Selection presentation
-
-The older blue dashed particle ring and blue ground line were removed.
-
-Selection now uses a slow colour pulse:
-
-- the selected particle's fill and near-black outline blend toward white;
-- selected ground fill, boundary, and roughness marks blend the same way;
-- the maximum blend is 50% toward white;
-- opacity and geometry never change;
-- ground receives no extra offset;
-- the pulse uses animation time, not scene time.
-
-Coincident particle groups continue to render a count only when more than one particle shares the mathematical position. That count remains near-black and is drawn above the selection colour pulse.
-
-Rough-ground marks now use the same line thickness as the ground boundary.
-
-## 19. Event-based scene pauses
-
-Particle Properties contains one grouped setting:
-
-```text
-Pause scene at:
-  Greatest height      [toggle]
-  Ground contact       [toggle]
-```
-
-Each toggle is stored independently per particle.
-
-When ground is disabled, the Ground contact option is removed from the visible group. Its saved per-particle setting is retained and becomes visible again if ground is re-enabled. Ground-contact pause logic remains inactive while ground is disabled.
-
-### Greatest height
-
-For a particle with positive world-y initial velocity and positive gravity:
-
-```text
-t_max = initialVelocity.y / g
-```
-
-Playback clamps exactly to that time. The event excludes `t = 0`, stationary particles, downward launches, and cases with no downward acceleration.
-
-The playback helper returns both the event time and all particle IDs sharing that earliest time. If this event is the pause target reached by playback, that record drives the greatest-height measurement annotation. Merely entering or stepping to the same numerical time does not create a record.
+The switches are native checkboxes visually represented by diagram-style toggles. Their invisible interactive bounds are anchored exactly to the visible switch, preventing focus-induced phantom scrolling, bottom whitespace, or title clipping in the scrollable properties panel.
 
 ### Ground contact
 
-When ground is enabled, the first positive-time impact is calculated analytically from the particle's initial conditions. Playback clamps to that exact impact time.
+The next positive ground impact is solved analytically. An initially resting particle does not produce a `t = 0` event.
 
-The event excludes:
+### Greatest height
 
-- ground disabled;
-- initial resting contact at `t = 0`;
-- an impact already reached or passed at the current inspection time.
-
-### Event arbitration
-
-The earliest upcoming target wins across:
-
-- the user's pending next-integer pause;
-- greatest-height pause targets;
-- ground-contact pause targets;
-- every particle in the scene.
-
-No event is detected by looking for a close animation frame. The analytical target is passed into `advancePlayback`, which prevents overshoot.
-
-## 20. Global timer and playback refinements
-
-The scene still has one global time shared by every particle.
-
-Manual time entry:
-
-- accepts any finite non-negative decimal precision;
-- can be changed whenever the user wants;
-- stops playback and immediately reconstructs the complete scene;
-- preserves the entered literal as exact display provenance.
-
-Generated time:
-
-- uses real `requestAnimationFrame` elapsed time during playback;
-- is shown to exactly two decimal places while actively playing;
-- returns to its full available precision when playback stops;
-- uses normalized arithmetic for manual `1`, `0.1`, and `0.01` steps.
-
-When an analytical greatest-height or ground-contact event pauses the scene at an exact fractional or surd time, the timer temporarily renders that exact value with MathML. This includes compound quadratic surds for ground contact with non-zero initial velocity. Clicking the exact value restores the full decimal representation in the editable time input.
-
-The timer's visual equation is now:
+For positive world vertical launch velocity and positive gravity:
 
 ```text
-t = [number] s
+t = uᵧ / g
 ```
 
-Only the number is inside the white bordered input. `t =` and `s` remain on the surrounding panel background.
+The scheduler groups all particles reaching their enabled earliest greatest-height event.
 
-Pressing Play:
+### Configurable vertical target
 
-- preserves the selected particle or ground;
-- leaves its contextual properties visible;
-- exits particle-placement mode;
-- begins smooth playback.
+The quadratic is solved for all candidate crossings. The next strictly future valid root is selected. A crossing below enabled ground or after an earlier impact is rejected.
 
-Pressing Pause schedules the next integer second rather than stopping on an arbitrary frame. The global time is clamped exactly to that integer, and the selected particle's inspector is refreshed on that same final frame.
+### Particle coincidence
 
-## 21. Playback control styling
+Coincidence pausing is analytical and based only on mathematical point positions.
 
-The square Play/Pause button remains the same height as the numeric time field.
+For each relevant particle pair, trajectories are split at ground-impact boundaries into polynomial segments. Relative x and y polynomials are solved and verified on each segment. This detects isolated intersections between animation frames as well as the start of a shared stationary interval.
 
-Playback states use existing interface colours:
+Rules implemented:
 
-- Play fill matches enabled toggle green;
-- active Pause fill matches Reset red;
-- pending Pause fill matches the SUVAT disclaimer amber.
+- at least one particle in the pair must have the option enabled;
+- `t = 0` is excluded;
+- a later reunion remains eligible even when the particles also coincided at `t = 0`;
+- only the earliest future coincidence is scheduled;
+- simultaneous pairs/groups cause one pause at their shared time;
+- a continuous coincident interval triggers only at its start;
+- a phase boundary does not retrigger particles that were already continuously coincident;
+- rendered circle radius is irrelevant;
+- sign and angle convention changes do not affect timing.
 
-Both icons have rounded near-black outlines.
+## 21. Exact pause times
 
-The play triangle was replaced with a softer curved SVG path, given a thinner outline than the pause bars, and visually shifted left so its asymmetric shape is centered within the button.
+Greatest-height, ground-contact, and vertical-target pauses can retain exact time forms:
 
-The pause bars retain their rounded coloured foreground and use a wider near-black under-stroke for a consistent outline.
+- reduced fractions;
+- square roots;
+- rational surds;
+- quadratic surds;
+- rational trigonometric expressions.
 
-## 22. Properties-panel refinements
+The correct quadratic root sign is retained for the actual event. Same-height polar ground contact simplifies through `2uᵧ/g`, preserving exact surd or trig components rather than reconstructing a decimal approximation.
 
-Scene Properties is anchored beneath the hotbar on the left. Its external pull tab collapses the panel off-screen without affecting the independent contextual inspector.
+The timer displays the exact form and exposes its three-decimal value on hover.
 
-Particle Properties and Ground Properties begin in the top-right. Particle Properties:
+## 22. Properties-panel and interaction refinements
 
-- extends downward only to the reserved scale-control area;
-- has a fixed title above its scroll region;
-- retains rounded clipping around the native scrollbar;
-- prevents content width changes when the scrollbar appears;
-- preserves panel scroll position across particle changes.
+The contextual properties stack keeps the title fixed while content scrolls beneath it. Scroll position and Kinematics expansion state are preserved when the selected particle refreshes.
 
-The Particle Properties title and Scene Properties title use the same pencil-grey fill as particles and ground.
+Implemented refinements include:
 
-All editable property fields use white. Read-only fields use title-grey.
+- widened Kinematics and timer value fields;
+- an internal scrollbar gutter so content is not obscured;
+- evenly spaced pause rows;
+- correctly anchored checkbox focus geometry;
+- keyboard-accessible calculation and graph dialogs;
+- pointer cursor for clickable graphs;
+- read-only values visually distinct from editable white input fields;
+- selected-particle white pulsing that does not alter mechanics or hit testing.
 
-The Positive direction label matches Gravity in size. Its arrow buttons are compact rather than word-width controls.
+## 23. Input validation and precision
 
-The pause settings were consolidated into a single hierarchy instead of two unrelated full-width rows. If ground is unavailable, only Greatest height is listed.
+User-entered gravity, coordinates, velocity components, speed, angle, mass, target values, and time use focused parsers.
 
-## 23. Main state and update flow
+Mechanics inputs generally accept at most three decimal places. Invalid entries restore the prior valid text and receive an invalid state. Direct scene-time inspection accepts greater decimal precision so exact event times can be inspected without forced truncation.
 
-`src/main.ts` owns:
+Physics calculations use normal JavaScript number precision and are not rounded after each operation. Rounding is confined to presentation and hover text.
 
-- persistent scene state;
-- camera state;
-- active tool;
-- selected particle ID;
-- ground-selection state;
-- dragged particle ID;
-- global scene time;
-- preserved manual time text;
-- playback state;
-- pending integer pause time;
-- the most recent triggering greatest-height pause event;
-- next particle ID.
+## 24. Rendering and point-particle rules
 
-The playback frame flow is:
+World coordinates are measured in metres and converted explicitly through the camera. Panning, zooming, grid alignment, ground, particles, arrows, dimensions, and annotations all use the same world-to-screen boundary.
 
-```text
-requestAnimationFrame timestamp
-        |
-        +-- calculate all upcoming enabled pause targets
-        +-- choose the earliest target
-        +-- advance or clamp global scene time
-        +-- reconstruct every particle analytically
-        +-- determine each selected particle's active kinematic phase
-        +-- refresh selected-particle analysis, including the final pause frame
-        +-- derive any active greatest-height measurements
-        +-- render annotations, particles, ground, and selection
-```
+The particle remains a mathematical point. Rendered circle size is used only for drawing and pointer hit testing. It is not used for:
 
-All particles are calculated from the same `currentTime`. There are no independent particle clocks.
+- ground impact;
+- displacement;
+- greatest height;
+- target crossings;
+- particle coincidence;
+- graph data;
+- kinematic values.
 
-Property changes, time changes, and selection changes flow through explicit control callbacks. Canvas rendering remains read-only with respect to mechanics state.
+Coincident particles can be grouped for rendering without changing their shared mathematical position.
 
-## 24. Tests added and extended
+## 25. Automated test coverage
 
-The repository currently defines 139 automated tests across 16 files.
-
-### Exact display — 14 tests
+The current suite contains 300 tests across 27 test files.
 
 Coverage includes:
 
-- literal entered-decimal preservation;
-- rational conversion and arithmetic;
-- conservative generated-fraction detection;
-- exact decimal versus reduced-fraction preference;
-- power-of-ten denominator behavior;
-- exact-first final answers;
-- trailing zeros on genuinely rounded three-place answers;
-- signed decimal text negation;
-- square-root display behavior.
+- free fall, horizontal invariance, ground impact, and deterministic reconstruction;
+- point-particle ground rules and post-impact state;
+- horizontal and vertical sign conversion;
+- angle conversion and convention invariance;
+- Cartesian and polar initial-condition editing;
+- reversible exact Cartesian/polar editor conversion, including quadrant-aware `arctan` forms;
+- special-angle surds and arbitrary-angle trig expressions;
+- 2D Kinematics values;
+- all SUVAT and horizontal-motion equations;
+- exact rational, surd, trig, cancellation, and final-answer formatting;
+- phase selection and exact phase notes;
+- greatest-height, target, ground-contact, and coincidence pause scheduling;
+- isolated, simultaneous, future, and continuous-interval coincidences;
+- exact auto-pause displays;
+- motion-graph planning, axes, ranges, ticks, annotations, and placement;
+- initial-velocity, greatest-height, target, and hover-target canvas geometry;
+- MathML tokenization, exact-value tooltips, control parsing, and text sizing;
+- camera conversion and selected-object presentation.
 
-### SUVAT and phase behavior — 12 tests
+## 26. Verification status
 
-Coverage includes:
+As of 6 August 2026:
 
-- numerical agreement of all five equations;
-- literal substitutions;
-- entered `0.333` remaining a decimal;
-- generated fractions reused in later working;
-- exact `v^2` and signed-root working;
-- free-flight analysis before and exactly at impact;
-- grounded phase-relative analysis after impact;
-- initially resting ground state;
-- upward launch from ground.
+- all 300 automated tests pass;
+- TypeScript type checking passes;
+- the Vite production build passes;
+- `git diff --check` passes, with only repository line-ending notices from Git.
 
-### Kinematic phase selection — 6 tests
+## 27. Deliberate non-goals
 
-Coverage includes free flight, exact impact, post-impact grounding, initially grounded particles, upward launch from ground, and sign-convention invariance.
+This phase does not add:
 
-### Sign convention — 3 tests
-
-Coverage includes identity, negation, and round-trip conversion for Up and Down.
-
-### Vertical kinematics — 3 tests
-
-Coverage includes known `s`, `u`, `v`, `a`, and `t`, sign-convention invariance, and displacement rather than distance.
-
-### Initial-condition editing — 3 tests
-
-Coverage includes default zero velocity, upward-positive edits, downward-positive conversion, preserved input text, and non-mutation.
-
-### Playback — 10 tests
-
-Coverage includes next-integer scheduling, exact clamping, greatest-height targets, simultaneous triggering particle IDs, target arbitration, exact ground-contact targets and triggering particle IDs, disabled-ground behavior, and `t = 0` exclusions.
-
-### Exact auto-pause time display — 5 tests
-
-Coverage includes fractional greatest-height times, terminating-decimal fallbacks, pure surd ground-contact times, simplified rational impact times, and compound quadratic surds with non-zero initial velocity.
-
-### Canvas presentation
-
-- initial-velocity annotations: 4 tests;
-- greatest-height measurement, geometry, exact labels, and visibility: 6 tests;
-- selection colour pulse: 2 tests;
-- particle geometry/grouping: 4 tests;
-- camera behavior: 4 tests.
-
-### UI and MathML
-
-- parsing and timer formatting: 48 tests;
-- MathML tokenization: 4 tests.
-
-### Existing physics layer
-
-The particle mechanics file contains 11 tests covering analytical free fall, initial velocity, horizontal invariance, exact impact, rest, ground disabled, gravity changes, point-particle collision, and deterministic state reconstruction.
-
-## 25. Verification status
-
-As of 3 August 2026:
-
-- TypeScript strict checking passes through the production build;
-- Vite production build passes;
-- all 139 tests across 16 files pass;
-- `git diff --check` reports no whitespace errors.
-
-## 26. Intentional deviations from the phase brief
-
-Later product instructions superseded several initial phase assumptions:
-
-- editing initial velocity preserves the current global time instead of resetting to zero;
-- playback preserves the selected object instead of deselecting it;
-- direct time entry accepts arbitrary decimal precision;
-- real-time playback and analytical event pauses are present;
-- exact fractions, surds, MathML, and a large calculation modal go beyond the brief's basic plain-HTML substitutions;
-- mass and ground roughness metadata remain visible even though neither affects vertical mechanics.
-
-These changes extend presentation and inspection without introducing horizontal mechanics, force calculations, or symbolic algebra.
-
-## 27. Deliberate non-goals retained
-
-This phase did not add:
-
-- horizontal velocity or acceleration;
-- projectile motion;
-- force arrows or force calculations;
-- `F = ma`, weight, reactions, or tension;
-- friction mechanics, despite stored Rough and `mu`;
-- energy calculations;
-- particle-particle collision response;
-- bounce or restitution;
+- forces or force arrows;
+- `F = ma` analysis;
+- work, energy, or power;
 - air resistance;
-- walls, inclines, rods, strings, springs, pulleys, or pivots;
-- rotation, moments, or angular mechanics;
-- arbitrary symbolic unknowns;
-- general equation rearrangement;
-- a computer algebra system;
-- multi-phase SUVAT derivations;
-- save/load, persistence, undo, or redo.
+- bounce or restitution;
+- physical particle-particle collisions;
+- rigid bodies, rotation, or moments;
+- arbitrary surfaces or inclined planes;
+- springs, strings, rods, pulleys, or constraints;
+- a computer algebra system or arbitrary equation rearranger.
 
-Mass, Rough, and coefficient of friction remain forward-looking metadata only.
+Particle coincidence is an observation/pause event only. It does not apply impulses or change either trajectory.
 
 ## 28. Overall assessment
 
-This phase established the first substantial educational layer on top of the mechanics sandbox.
+The 2D kinematics phase now provides a coherent educational path from initial conditions to diagram, motion, exact scalar values, equation working, graphs, and analytical events.
 
-The application now preserves five important boundaries:
+The main technical foundation is trustworthy because:
 
-```text
-world coordinates
-        !=
-educational sign convention
-        !=
-physical numerical state
-        !=
-exact display provenance
-        !=
-Canvas/DOM presentation
-```
+- mechanics uses direct analytical reconstruction;
+- presentation conventions cannot mutate world trajectories;
+- exact display provenance is carried separately from floating-point state;
+- contact and coincidence use mathematical point geometry;
+- phase boundaries are explicit;
+- graphs and annotations reuse the same kinematic model;
+- UI dialogs enlarge by redrawing, not bitmap scaling;
+- the automated suite covers numerical, symbolic, temporal, and presentation edge cases.
 
-Particles still move through a deterministic analytical vertical model. The new kinematics layer derives signed scalar quantities from that model, checks whether one SUVAT phase is valid, preserves exact values through fixed calculations, and presents the working using proper mathematical layout.
-
-The result is a stronger base for future educational mechanics work without prematurely becoming a symbolic algebra system or general-purpose physics engine.
+This leaves the project ready for a later mechanics phase without requiring the 2D kinematics architecture to be replaced.

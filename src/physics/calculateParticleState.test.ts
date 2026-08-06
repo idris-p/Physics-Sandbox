@@ -37,32 +37,54 @@ describe("calculateParticleState", () => {
     expect(downwardState.velocity.y).toBeCloseTo(-12.3, 12);
   });
 
-  it("never changes horizontal position, velocity, or acceleration", () => {
-    const state = calculateParticleState(particle, 100, {
+  it("reconstructs horizontal free motion analytically", () => {
+    const moving = createParticle("horizontal", { x: 2, y: 10 });
+    moving.initialVelocity.x = 3;
+    const state = calculateParticleState(moving, 4, {
+      gravity: 9.8,
+      groundEnabled: false,
+    });
+
+    expect(state.position.x).toBe(14);
+    expect(state.velocity.x).toBe(3);
+    expect(state.acceleration.x).toBe(0);
+  });
+
+  it("reconstructs simultaneous horizontal and vertical motion", () => {
+    const projectile = createParticle("projectile", { x: 0, y: 10 });
+    projectile.initialVelocity = { x: 4, y: 5 };
+    const state = calculateParticleState(projectile, 1, {
       gravity: 9.8,
       groundEnabled: false,
     });
 
     expect(state.position.x).toBe(4);
-    expect(state.velocity.x).toBe(0);
-    expect(state.acceleration.x).toBe(0);
+    expect(state.position.y).toBeCloseTo(10.1, 12);
+    expect(state.velocity).toEqual({ x: 4, y: -4.800000000000001 });
+    expect(state.acceleration).toEqual({ x: 0, y: -9.8 });
   });
 
   it("uses the free-fall boundary state at impact, then rests after impact", () => {
+    const movingParticle = createParticle("moving-impact", { x: 4, y: 10 });
+    movingParticle.initialVelocity.x = 3;
     const impactTime = Math.sqrt((2 * 10) / 9.8);
-    const atImpact = calculateParticleState(particle, impactTime, {
+    const atImpact = calculateParticleState(movingParticle, impactTime, {
       gravity: 9.8,
       groundEnabled: true,
     });
-    const afterImpact = calculateParticleState(particle, impactTime + 0.01, {
+    const afterImpact = calculateParticleState(movingParticle, impactTime + 0.01, {
       gravity: 9.8,
       groundEnabled: true,
     });
 
     expect(atImpact.position.y).toBe(0);
+    expect(atImpact.position.x).toBeCloseTo(4 + 3 * impactTime, 12);
+    expect(atImpact.velocity.x).toBe(3);
     expect(atImpact.velocity.y).toBeCloseTo(-9.8 * impactTime, 12);
     expect(atImpact.acceleration.y).toBe(-9.8);
     expect(afterImpact.position.y).toBe(0);
+    expect(afterImpact.position.x).toBeCloseTo(4 + 3 * impactTime, 12);
+    expect(afterImpact.velocity.x).toBe(0);
     expect(afterImpact.velocity.y).toBe(0);
     expect(afterImpact.acceleration.y).toBe(0);
   });
@@ -104,6 +126,7 @@ describe("calculateParticleState", () => {
 
   it("allows a particle with upward initial velocity to leave the ground", () => {
     const launched = createParticle("launched", { x: 0, y: 0 });
+    launched.initialVelocity.x = 2;
     launched.initialVelocity.y = 5;
 
     const ascending = calculateParticleState(launched, 0.25, {
@@ -116,8 +139,10 @@ describe("calculateParticleState", () => {
     });
 
     expect(ascending.position.y).toBeCloseTo(0.94375, 12);
+    expect(ascending.position.x).toBeCloseTo(0.5, 12);
     expect(ascending.velocity.y).toBeCloseTo(2.55, 12);
     expect(returned.position.y).toBe(0);
+    expect(returned.position.x).toBeCloseTo(2 * (2 * 5 / 9.8), 12);
     expect(returned.velocity.y).toBe(0);
   });
 

@@ -1,39 +1,93 @@
 import { PIXELS_PER_METRE } from "../config";
 import type { Tool } from "../canvas/interaction";
-import type { VerticalPositiveDirection } from "../kinematics/signConvention";
+import type {
+  CoordinateConvention,
+  HorizontalPositiveDirection,
+  VerticalPositiveDirection,
+} from "../kinematics/signConvention";
 import {
+  type KinematicEquationResult,
   type KinematicDisplayValues,
   type SuvatEquationResult,
 } from "../kinematics/suvat";
 import type { Vec2 } from "../math/Vec2";
-import type { AutoPauseTimeDisplay } from "../simulation/autoPauseTimeDisplay";
+import type {
+  AngleConvention,
+  AngleDirection,
+  AngleReferenceAxis,
+} from "../kinematics/angleConvention";
+import type { InitialVelocityInputMode } from "../model/Particle";
+import {
+  formatAutoPauseTimeExactText,
+  type AutoPauseTimeDisplay,
+} from "../simulation/autoPauseTimeDisplay";
 import {
   createMathExpression,
   createMathResult,
   createQuadraticSurdValue,
+  createRationalSurdValue,
   createSquareRootExpression,
   createSquareRootValue,
 } from "./mathMarkup";
+import {
+  formatExactValueTooltip,
+  getExactValueTooltip,
+  isSymbolicExactDisplay,
+} from "./exactValueTooltip";
+import type {
+  MotionGraphAnnotation,
+  MotionGraphData,
+} from "../kinematics/motionGraphs";
+import { formatWorkingValue } from "../kinematics/exactDisplay";
+import {
+  chooseMotionGraphAnnotationPlacement,
+  EXPANDED_MOTION_GRAPH_HEIGHT,
+  EXPANDED_MOTION_GRAPH_WIDTH,
+  getMotionGraphAnnotationLabel,
+  getMotionGraphDialogTitle,
+  renderMotionGraph,
+  type MotionGraphQuantity,
+  type RenderedMotionGraphAnnotation,
+} from "./motionGraphCanvas";
+import type {
+  ExactPhaseTime,
+  PhaseIntervalNote,
+} from "../simulation/phaseIntervalNote";
 
 export type PlaybackButtonState = "paused" | "playing" | "pause-pending";
-export interface PhaseIntervalNote {
-  startTime: string;
-  endTime: string;
-  phaseTime: string;
-}
-
+export type InitialVelocityField = "x" | "y" | "speed" | "angle";
 export type SelectionProperties =
   | {
       type: "particle";
       position: Vec2;
       mass: number;
-      initialVelocityText: string;
+      initialVelocityText: { x: string; y: string };
+      initialVelocityValues: {
+        x: number;
+        y: number;
+        speed: number;
+        angle: number;
+      };
+      initialVelocityEditorMode: InitialVelocityInputMode;
+      initialVelocitySource: InitialVelocityInputMode;
+      initialVelocityAngleText: { speed: string; angle: string } | null;
       pauseAtGreatestHeight: boolean;
       pauseAtGroundContact: boolean;
+      pauseAtParticleCoincidence: boolean;
+      pauseAtVerticalTarget: boolean;
+      verticalPauseTargetText: string;
       groundEnabled: boolean;
       phaseNote: PhaseIntervalNote | null;
-      kinematics: KinematicDisplayValues;
-      suvatEquations: SuvatEquationResult[];
+      kinematics: { x: KinematicDisplayValues; y: KinematicDisplayValues };
+      kinematicValues: {
+        x: Record<keyof KinematicDisplayValues, number>;
+        y: Record<keyof KinematicDisplayValues, number>;
+      };
+      motionGraphs: { x: MotionGraphData; y: MotionGraphData };
+      equations: {
+        x: KinematicEquationResult[];
+        y: SuvatEquationResult[];
+      };
     }
   | { type: "ground"; rough: boolean; friction: number }
   | null;
@@ -44,10 +98,30 @@ export interface ControlCallbacks {
   onGroundChange: (enabled: boolean) => void;
   onGravityChange: (gravity: number, enteredText: string) => void;
   onParticleMassChange: (mass: number) => void;
-  onParticleInitialVelocityChange: (velocity: number, enteredText: string) => void;
+  onParticleInitialVelocityComponentsChange: (
+    velocity: { x: number; y: number },
+    enteredText: { x: string; y: string },
+  ) => void;
+  onParticleInitialVelocityAngleChange: (
+    speed: number,
+    angle: number,
+    enteredText: { speed: string; angle: string },
+  ) => void;
+  onParticleInitialVelocityModeChange: (mode: InitialVelocityInputMode) => void;
   onParticlePauseAtGreatestHeightChange: (enabled: boolean) => void;
   onParticlePauseAtGroundContactChange: (enabled: boolean) => void;
-  onPositiveDirectionChange: (direction: VerticalPositiveDirection) => void;
+  onParticlePauseAtCoincidenceChange: (enabled: boolean) => void;
+  onParticlePauseAtVerticalTargetChange: (enabled: boolean) => void;
+  onParticleVerticalPauseTargetValueChange: (
+    value: number,
+    enteredText: string,
+  ) => void;
+  onPositiveXChange: (direction: HorizontalPositiveDirection) => void;
+  onPositiveYChange: (direction: VerticalPositiveDirection) => void;
+  onAngleConventionChange: (
+    referenceAxis: AngleReferenceAxis,
+    direction: AngleDirection,
+  ) => void;
   onGroundFrictionChange: (coefficient: number) => void;
   onGroundRoughChange: (rough: boolean) => void;
   onClearScene: () => void;
@@ -67,7 +141,9 @@ export interface Controls {
   setTool: (tool: Tool) => void;
   setSelected: (hasSelection: boolean) => void;
   setSelectionProperties: (selection: SelectionProperties) => void;
-  setPositiveDirection: (direction: VerticalPositiveDirection) => void;
+  setCoordinateConvention: (
+    convention: CoordinateConvention & AngleConvention,
+  ) => void;
   setTime: (
     time: number,
     enteredText?: string,
@@ -84,6 +160,8 @@ export function createControls(callbacks: ControlCallbacks): Controls {
   const groundToggle = getElement<HTMLInputElement>("ground-toggle");
   const gravityInput = getElement<HTMLInputElement>("gravity-input");
   const gravityError = getElement<HTMLElement>("gravity-error");
+  const angleReferenceAxis = getElement<HTMLSelectElement>("angle-reference-axis");
+  const angleDirection = getElement<HTMLSelectElement>("angle-direction");
   const clearScene = getElement<HTMLButtonElement>("clear-scene");
   const particleProperties = getElement<HTMLElement>("particle-properties");
   const particlePropertiesScroll = particleProperties.querySelector<HTMLElement>(
@@ -98,8 +176,39 @@ export function createControls(callbacks: ControlCallbacks): Controls {
   const particlePositionX = getElement<HTMLOutputElement>("particle-position-x");
   const particlePositionY = getElement<HTMLOutputElement>("particle-position-y");
   const particleMassInput = getElement<HTMLInputElement>("particle-mass-input");
-  const particleInitialVelocityInput = getElement<HTMLInputElement>(
-    "particle-initial-velocity-input",
+  const particleInitialVelocityXInput = getElement<HTMLInputElement>(
+    "particle-initial-velocity-x-input",
+  );
+  const particleInitialVelocityYInput = getElement<HTMLInputElement>(
+    "particle-initial-velocity-y-input",
+  );
+  const particleInitialSpeedInput = getElement<HTMLInputElement>(
+    "particle-initial-speed-input",
+  );
+  const particleInitialAngleInput = getElement<HTMLInputElement>(
+    "particle-initial-angle-input",
+  );
+  const particleInitialVelocityXExact = getElement<HTMLButtonElement>(
+    "particle-initial-velocity-x-exact",
+  );
+  const particleInitialVelocityYExact = getElement<HTMLButtonElement>(
+    "particle-initial-velocity-y-exact",
+  );
+  const particleInitialSpeedExact = getElement<HTMLButtonElement>(
+    "particle-initial-speed-exact",
+  );
+  const particleInitialAngleExact = getElement<HTMLButtonElement>(
+    "particle-initial-angle-exact",
+  );
+  const velocityModeAngle = getElement<HTMLButtonElement>("velocity-mode-angle");
+  const velocityModeComponents = getElement<HTMLButtonElement>(
+    "velocity-mode-components",
+  );
+  const initialVelocityAngleFields = getElement<HTMLElement>(
+    "initial-velocity-angle-fields",
+  );
+  const initialVelocityComponentFields = getElement<HTMLElement>(
+    "initial-velocity-component-fields",
   );
   const particlePauseAtGreatestToggle = getElement<HTMLInputElement>(
     "particle-pause-at-greatest-toggle",
@@ -110,6 +219,23 @@ export function createControls(callbacks: ControlCallbacks): Controls {
   const particlePauseAtGroundRow = getElement<HTMLElement>(
     "particle-pause-at-ground-row",
   );
+  const particlePauseAtCoincidenceToggle = getElement<HTMLInputElement>(
+    "particle-pause-at-coincidence-toggle",
+  );
+  const particlePauseTargetToggle = getElement<HTMLInputElement>(
+    "particle-pause-target-toggle",
+  );
+  const particlePauseTargetInput = getElement<HTMLInputElement>(
+    "particle-pause-target-input",
+  );
+  const particlePauseTargetControl = getElement<HTMLElement>(
+    "particle-pause-target-control",
+  );
+  const particlePauseTargetLabel = getElement<HTMLElement>(
+    "particle-pause-target-label",
+  );
+  const positiveLeft = getElement<HTMLButtonElement>("positive-left");
+  const positiveRight = getElement<HTMLButtonElement>("positive-right");
   const positiveUp = getElement<HTMLButtonElement>("positive-up");
   const positiveDown = getElement<HTMLButtonElement>("positive-down");
   const kinematicOutputs = {
@@ -120,9 +246,44 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     t: getElement<HTMLOutputElement>("kinematic-t"),
   };
   const kinematicPhaseNote = getElement<HTMLElement>("kinematic-phase-note");
+  const displacementTimeGraph = getElement<HTMLCanvasElement>(
+    "displacement-time-graph",
+  );
+  const velocityTimeGraph = getElement<HTMLCanvasElement>(
+    "velocity-time-graph",
+  );
+  const motionGraphDialog = getElement<HTMLDialogElement>(
+    "motion-graph-dialog",
+  );
+  const motionGraphDialogTitle = getElement<HTMLElement>(
+    "motion-graph-dialog-title",
+  );
+  const enlargedMotionGraph = getElement<HTMLCanvasElement>(
+    "enlarged-motion-graph",
+  );
+  const enlargedMotionGraphAnnotations = getElement<HTMLElement>(
+    "enlarged-motion-graph-annotations",
+  );
+  const motionGraphExactTooltip = getElement<HTMLElement>(
+    "motion-graph-exact-tooltip",
+  );
+  const closeMotionGraphDialog = getElement<HTMLButtonElement>(
+    "close-motion-graph-dialog",
+  );
+  const kinematicVertical = getElement<HTMLButtonElement>("kinematic-vertical");
+  const kinematicHorizontal = getElement<HTMLButtonElement>("kinematic-horizontal");
+  const kinematicQuantityRows = new Map(
+    Array.from(
+      document.querySelectorAll<HTMLElement>("[data-kinematic-quantity]"),
+    ).map((row) => [row.dataset.kinematicQuantity, row]),
+  );
   const suvatEquations = getElement<HTMLElement>("suvat-equations");
+  const suvatTitle = getElement<HTMLElement>("suvat-title");
   const suvatCalculationDialog = getElement<HTMLDialogElement>(
     "suvat-calculation-dialog",
+  );
+  const suvatCalculationDialogTitle = getElement<HTMLElement>(
+    "suvat-calculation-dialog-title",
   );
   const closeSuvatCalculationDialog = getElement<HTMLButtonElement>(
     "close-suvat-calculation-dialog",
@@ -166,13 +327,101 @@ export function createControls(callbacks: ControlCallbacks): Controls {
   let exactTimeDisplaySuppressed = false;
   let isEditingExactTime = false;
   let currentParticleMass = Number(particleMassInput.value);
-  let currentParticleInitialVelocityText = particleInitialVelocityInput.value;
+  let currentParticleInitialVelocityText = {
+    x: particleInitialVelocityXInput.value,
+    y: particleInitialVelocityYInput.value,
+  };
+  let currentParticleInitialVelocityValues = {
+    x: Number(particleInitialVelocityXInput.value),
+    y: Number(particleInitialVelocityYInput.value),
+    speed: Number(particleInitialSpeedInput.value),
+    angle: Number(particleInitialAngleInput.value),
+  };
+  let currentParticleInitialAngleText = {
+    speed: particleInitialSpeedInput.value,
+    angle: particleInitialAngleInput.value,
+  };
+  const initialVelocityInputs: Record<InitialVelocityField, HTMLInputElement> = {
+    x: particleInitialVelocityXInput,
+    y: particleInitialVelocityYInput,
+    speed: particleInitialSpeedInput,
+    angle: particleInitialAngleInput,
+  };
+  const initialVelocityExactValues: Record<InitialVelocityField, HTMLButtonElement> = {
+    x: particleInitialVelocityXExact,
+    y: particleInitialVelocityYExact,
+    speed: particleInitialSpeedExact,
+    angle: particleInitialAngleExact,
+  };
+  let exactInitialVelocityFields = new Set<InitialVelocityField>();
+  let editingExactInitialVelocityField: InitialVelocityField | null = null;
+  let currentParticlePauseTargetText = particlePauseTargetInput.value;
   let currentGroundFriction = Number(groundFrictionInput.value);
   let currentTool: Tool = "select";
   let particleAnalysisExpanded = false;
   let particlePropertiesScrollTop = 0;
-  let currentSuvatEquations: SuvatEquationResult[] = [];
-  let expandedSuvatEquationId: SuvatEquationResult["id"] | null = null;
+  let selectedKinematicAxis: "x" | "y" = "y";
+  let currentParticleSelection: Extract<SelectionProperties, { type: "particle" }> | null = null;
+  let currentSuvatEquations: KinematicEquationResult[] = [];
+  let expandedSuvatEquationId: string | null = null;
+  let expandedMotionGraphQuantity: MotionGraphQuantity | null = null;
+
+  const getInitialVelocityFieldText = (field: InitialVelocityField): string =>
+    field === "x" || field === "y"
+      ? currentParticleInitialVelocityText[field]
+      : currentParticleInitialAngleText[field];
+
+  const refreshInitialVelocityField = (field: InitialVelocityField): void => {
+    const input = initialVelocityInputs[field];
+    const exactValue = initialVelocityExactValues[field];
+    const showExact =
+      exactInitialVelocityFields.has(field) &&
+      editingExactInitialVelocityField !== field;
+    exactValue.classList.toggle("is-hidden", !showExact);
+    input.classList.toggle("is-hidden", showExact);
+
+    if (showExact) {
+      const text = getInitialVelocityFieldText(field);
+      const tooltip = formatExactValueTooltip(
+        currentParticleInitialVelocityValues[field],
+      );
+      exactValue.replaceChildren(createMathExpression(text));
+      exactValue.dataset.exactApproximation = tooltip;
+      exactValue.setAttribute("aria-description", `Approximately ${tooltip}`);
+    } else {
+      delete exactValue.dataset.exactApproximation;
+      exactValue.removeAttribute("aria-description");
+      if (
+        editingExactInitialVelocityField !== field &&
+        document.activeElement !== input
+      ) {
+        input.value = getInitialVelocityFieldText(field);
+      }
+    }
+  };
+
+  for (const field of ["x", "y", "speed", "angle"] as const) {
+    const input = initialVelocityInputs[field];
+    const exactValue = initialVelocityExactValues[field];
+    exactValue.addEventListener("click", () => {
+      editingExactInitialVelocityField = field;
+      exactValue.classList.add("is-hidden");
+      input.classList.remove("is-hidden");
+      input.value = formatEditableVelocityDecimal(
+        currentParticleInitialVelocityValues[field],
+      );
+      input.focus();
+      input.select();
+    });
+    input.addEventListener("blur", () => {
+      if (editingExactInitialVelocityField !== field) return;
+      editingExactInitialVelocityField = null;
+      refreshInitialVelocityField(field);
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") input.blur();
+    });
+  }
 
   const setParticleAnalysisExpanded = (expanded: boolean): void => {
     if (!expanded) particlePropertiesScrollTop = particlePropertiesScroll.scrollTop;
@@ -200,12 +449,171 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     }
   });
 
+  const renderSelectedKinematicComponent = (): void => {
+    const selection = currentParticleSelection;
+    if (!selection) return;
+
+    const isVertical = selectedKinematicAxis === "y";
+    kinematicVertical.classList.toggle("is-active", isVertical);
+    kinematicHorizontal.classList.toggle("is-active", !isVertical);
+    kinematicVertical.setAttribute("aria-pressed", String(isVertical));
+    kinematicHorizontal.setAttribute("aria-pressed", String(!isVertical));
+    kinematicQuantityRows.get("u")?.toggleAttribute("hidden", !isVertical);
+    kinematicQuantityRows.get("a")?.toggleAttribute("hidden", !isVertical);
+    suvatTitle.textContent = isVertical ? "SUVAT" : "Horizontal motion";
+    suvatCalculationDialogTitle.textContent = isVertical
+      ? "SUVAT Calculation"
+      : "Horizontal Calculation";
+
+    currentSuvatEquations = selection.equations[selectedKinematicAxis];
+    setPhaseIntervalNote(kinematicPhaseNote, selection.phaseNote);
+    setKinematicOutputs(
+      kinematicOutputs,
+      selection.kinematics[selectedKinematicAxis],
+      selection.kinematicValues[selectedKinematicAxis],
+    );
+    const graph = selection.motionGraphs[selectedKinematicAxis];
+    renderMotionGraph(displacementTimeGraph, graph, "displacement");
+    renderMotionGraph(velocityTimeGraph, graph, "velocity");
+    if (motionGraphDialog.open && expandedMotionGraphQuantity) {
+      renderExpandedMotionGraph(graph, expandedMotionGraphQuantity);
+    }
+    setSuvatAnalysis(suvatEquations, currentSuvatEquations);
+    refreshExpandedSuvatEquation();
+  };
+
+  kinematicVertical.addEventListener("click", () => {
+    selectedKinematicAxis = "y";
+    renderSelectedKinematicComponent();
+  });
+  kinematicHorizontal.addEventListener("click", () => {
+    selectedKinematicAxis = "x";
+    renderSelectedKinematicComponent();
+  });
+
+  const renderExpandedMotionGraph = (
+    graph: MotionGraphData,
+    quantity: MotionGraphQuantity,
+  ): void => {
+    const title = getMotionGraphDialogTitle(selectedKinematicAxis, quantity);
+    motionGraphDialogTitle.textContent = title;
+    enlargedMotionGraph.setAttribute("aria-label", title);
+    const annotations = renderMotionGraph(
+      enlargedMotionGraph,
+      graph,
+      quantity,
+      "expanded",
+    );
+    renderExpandedMotionGraphAnnotations(
+      enlargedMotionGraphAnnotations,
+      annotations,
+      graph,
+      quantity,
+    );
+  };
+
+  const openMotionGraph = (quantity: MotionGraphQuantity): void => {
+    const selection = currentParticleSelection;
+    if (!selection) return;
+    expandedMotionGraphQuantity = quantity;
+    if (!motionGraphDialog.open) motionGraphDialog.showModal();
+    renderExpandedMotionGraph(
+      selection.motionGraphs[selectedKinematicAxis],
+      quantity,
+    );
+    closeMotionGraphDialog.focus();
+  };
+
+  const showMotionGraphExactTooltip = (
+    label: HTMLElement,
+    clientX: number,
+    clientY: number,
+  ): void => {
+    const text = label.dataset.exactApproximation;
+    if (!text) return;
+    motionGraphExactTooltip.textContent = text;
+    motionGraphExactTooltip.hidden = false;
+    const bounds = enlargedMotionGraphAnnotations.getBoundingClientRect();
+    const gap = 12;
+    const proposedLeft = clientX - bounds.left + gap;
+    const proposedTop = clientY - bounds.top + gap;
+    motionGraphExactTooltip.style.left = `${Math.max(
+      gap,
+      Math.min(
+        proposedLeft,
+        bounds.width - motionGraphExactTooltip.offsetWidth - gap,
+      ),
+    )}px`;
+    motionGraphExactTooltip.style.top = `${Math.max(
+      gap,
+      Math.min(
+        proposedTop,
+        bounds.height - motionGraphExactTooltip.offsetHeight - gap,
+      ),
+    )}px`;
+  };
+
+  enlargedMotionGraphAnnotations.addEventListener("pointermove", (event) => {
+    if (!(event.target instanceof Element)) return;
+    const label = event.target.closest<HTMLElement>(
+      ".motion-graph-coordinate[data-exact-approximation]",
+    );
+    if (!label) {
+      motionGraphExactTooltip.hidden = true;
+      return;
+    }
+    showMotionGraphExactTooltip(label, event.clientX, event.clientY);
+  });
+  enlargedMotionGraphAnnotations.addEventListener("pointerleave", () => {
+    motionGraphExactTooltip.hidden = true;
+  });
+  enlargedMotionGraphAnnotations.addEventListener("focusin", (event) => {
+    if (!(event.target instanceof HTMLElement)) return;
+    const bounds = event.target.getBoundingClientRect();
+    showMotionGraphExactTooltip(event.target, bounds.right, bounds.bottom);
+  });
+  enlargedMotionGraphAnnotations.addEventListener("focusout", () => {
+    motionGraphExactTooltip.hidden = true;
+  });
+
+  const activateMotionGraphFromKeyboard = (
+    event: KeyboardEvent,
+    quantity: MotionGraphQuantity,
+  ): void => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    openMotionGraph(quantity);
+  };
+
+  displacementTimeGraph.addEventListener("click", () => {
+    openMotionGraph("displacement");
+  });
+  velocityTimeGraph.addEventListener("click", () => {
+    openMotionGraph("velocity");
+  });
+  displacementTimeGraph.addEventListener("keydown", (event) => {
+    activateMotionGraphFromKeyboard(event, "displacement");
+  });
+  velocityTimeGraph.addEventListener("keydown", (event) => {
+    activateMotionGraphFromKeyboard(event, "velocity");
+  });
+  closeMotionGraphDialog.addEventListener("click", () => {
+    motionGraphDialog.close();
+  });
+  motionGraphDialog.addEventListener("click", (event) => {
+    if (event.target === motionGraphDialog) motionGraphDialog.close();
+  });
+  motionGraphDialog.addEventListener("close", () => {
+    expandedMotionGraphQuantity = null;
+    motionGraphExactTooltip.hidden = true;
+  });
+
   const closeExpandedSuvatEquation = (): void => {
     if (suvatCalculationDialog.open) suvatCalculationDialog.close();
     expandedSuvatEquationId = null;
   };
 
-  const refreshExpandedSuvatEquation = (): void => {
+  function refreshExpandedSuvatEquation(): void {
     if (!expandedSuvatEquationId) return;
     const equation = currentSuvatEquations.find(
       (candidate) => candidate.id === expandedSuvatEquationId,
@@ -216,7 +624,7 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     }
 
     populateSuvatEquationElement(suvatCalculationDialogEquation, equation);
-  };
+  }
 
   const openExpandedSuvatEquation = (equationId: string): void => {
     const equation = currentSuvatEquations.find(
@@ -312,19 +720,105 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     callbacks.onParticleMassChange(result);
   });
 
-  particleInitialVelocityInput.addEventListener("change", () => {
-    const result = parseSignedValue(particleInitialVelocityInput.value);
-    if (result === null) {
-      particleInitialVelocityInput.value = currentParticleInitialVelocityText;
-      particleInitialVelocityInput.setAttribute("aria-invalid", "true");
+  const commitInitialVelocityComponents = (changedAxis: "x" | "y"): void => {
+    const changedInput = changedAxis === "x"
+      ? particleInitialVelocityXInput
+      : particleInitialVelocityYInput;
+    const changedValue = parseSignedValue(changedInput.value);
+    if (changedValue === null) {
+      const input = changedAxis === "x"
+        ? particleInitialVelocityXInput
+        : particleInitialVelocityYInput;
+      input.value = currentParticleInitialVelocityText[changedAxis];
+      input.setAttribute("aria-invalid", "true");
       return;
     }
+    const values = {
+      x: currentParticleInitialVelocityValues.x,
+      y: currentParticleInitialVelocityValues.y,
+      [changedAxis]: changedValue,
+    };
 
-    const enteredText = particleInitialVelocityInput.value.trim();
+    const enteredText = replaceInitialVelocityFieldText(
+      currentParticleInitialVelocityText,
+      changedAxis,
+      changedInput.value.trim(),
+    );
     currentParticleInitialVelocityText = enteredText;
-    particleInitialVelocityInput.value = enteredText;
-    particleInitialVelocityInput.removeAttribute("aria-invalid");
-    callbacks.onParticleInitialVelocityChange(result, enteredText);
+    currentParticleInitialVelocityValues = {
+      ...currentParticleInitialVelocityValues,
+      ...values,
+    };
+    particleInitialVelocityXInput.value = enteredText.x;
+    particleInitialVelocityYInput.value = enteredText.y;
+    particleInitialVelocityXInput.removeAttribute("aria-invalid");
+    particleInitialVelocityYInput.removeAttribute("aria-invalid");
+    callbacks.onParticleInitialVelocityComponentsChange(
+      { x: values.x, y: values.y },
+      enteredText,
+    );
+  };
+
+  particleInitialVelocityXInput.addEventListener("change", () => {
+    commitInitialVelocityComponents("x");
+  });
+  particleInitialVelocityYInput.addEventListener("change", () => {
+    commitInitialVelocityComponents("y");
+  });
+
+  const commitInitialVelocityAngle = (changedField: "speed" | "angle"): void => {
+    const changedInput = changedField === "speed"
+      ? particleInitialSpeedInput
+      : particleInitialAngleInput;
+    const changedValue = changedField === "speed"
+      ? parsePositiveProperty(changedInput.value)
+      : parseAngle(changedInput.value);
+    if (changedValue === null) {
+      const input = changedField === "speed"
+        ? particleInitialSpeedInput
+        : particleInitialAngleInput;
+      input.value = currentParticleInitialAngleText[changedField];
+      input.setAttribute("aria-invalid", "true");
+      return;
+    }
+    const speed = changedField === "speed"
+      ? changedValue
+      : currentParticleInitialVelocityValues.speed;
+    const angle = changedField === "angle"
+      ? changedValue
+      : currentParticleInitialVelocityValues.angle;
+
+    const enteredText = replaceInitialVelocityFieldText(
+      currentParticleInitialAngleText,
+      changedField,
+      changedInput.value.trim(),
+    );
+    currentParticleInitialAngleText = enteredText;
+    currentParticleInitialVelocityValues = {
+      ...currentParticleInitialVelocityValues,
+      speed,
+      angle,
+    };
+    particleInitialSpeedInput.value = enteredText.speed;
+    particleInitialAngleInput.value = enteredText.angle;
+    particleInitialSpeedInput.removeAttribute("aria-invalid");
+    particleInitialAngleInput.removeAttribute("aria-invalid");
+    callbacks.onParticleInitialVelocityAngleChange(speed, angle, enteredText);
+  };
+
+  particleInitialSpeedInput.addEventListener("change", () => {
+    commitInitialVelocityAngle("speed");
+  });
+  particleInitialAngleInput.addEventListener("change", () => {
+    commitInitialVelocityAngle("angle");
+  });
+  velocityModeAngle.addEventListener("click", () => {
+    editingExactInitialVelocityField = null;
+    callbacks.onParticleInitialVelocityModeChange("angle");
+  });
+  velocityModeComponents.addEventListener("click", () => {
+    editingExactInitialVelocityField = null;
+    callbacks.onParticleInitialVelocityModeChange("components");
   });
 
   particlePauseAtGreatestToggle.addEventListener("change", () => {
@@ -339,12 +833,54 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     );
   });
 
+  particlePauseAtCoincidenceToggle.addEventListener("change", () => {
+    callbacks.onParticlePauseAtCoincidenceChange(
+      particlePauseAtCoincidenceToggle.checked,
+    );
+  });
+
+  particlePauseTargetToggle.addEventListener("change", () => {
+    callbacks.onParticlePauseAtVerticalTargetChange(
+      particlePauseTargetToggle.checked,
+    );
+  });
+
+  particlePauseTargetInput.addEventListener("change", () => {
+    const groundEnabled = currentParticleSelection?.groundEnabled ?? false;
+    const result = groundEnabled
+      ? parseGravity(particlePauseTargetInput.value)
+      : parseSignedValue(particlePauseTargetInput.value);
+    if (result === null) {
+      particlePauseTargetInput.value = currentParticlePauseTargetText;
+      particlePauseTargetInput.setAttribute("aria-invalid", "true");
+      return;
+    }
+
+    currentParticlePauseTargetText = particlePauseTargetInput.value.trim();
+    particlePauseTargetInput.value = currentParticlePauseTargetText;
+    particlePauseTargetInput.removeAttribute("aria-invalid");
+    callbacks.onParticleVerticalPauseTargetValueChange(
+      result,
+      currentParticlePauseTargetText,
+    );
+  });
+
+  positiveLeft.addEventListener("click", () => callbacks.onPositiveXChange("left"));
+  positiveRight.addEventListener("click", () => callbacks.onPositiveXChange("right"));
   positiveUp.addEventListener("click", () => {
-    callbacks.onPositiveDirectionChange("up");
+    callbacks.onPositiveYChange("up");
   });
   positiveDown.addEventListener("click", () => {
-    callbacks.onPositiveDirectionChange("down");
+    callbacks.onPositiveYChange("down");
   });
+  const commitAngleConvention = (): void => {
+    callbacks.onAngleConventionChange(
+      angleReferenceAxis.value as AngleReferenceAxis,
+      angleDirection.value as AngleDirection,
+    );
+  };
+  angleReferenceAxis.addEventListener("change", commitAngleConvention);
+  angleDirection.addEventListener("change", commitAngleConvention);
 
   groundFrictionInput.addEventListener("change", () => {
     const result = parsePositiveProperty(groundFrictionInput.value);
@@ -452,34 +988,81 @@ export function createControls(callbacks: ControlCallbacks): Controls {
       );
 
       if (selection?.type === "particle") {
-        currentSuvatEquations = selection.suvatEquations;
+        currentParticleSelection = selection;
         currentParticleMass = selection.mass;
-        currentParticleInitialVelocityText = selection.initialVelocityText;
+        currentParticleInitialVelocityText = { ...selection.initialVelocityText };
+        currentParticleInitialVelocityValues = {
+          ...selection.initialVelocityValues,
+        };
+        currentParticleInitialAngleText = selection.initialVelocityAngleText ?? {
+          speed: "0",
+          angle: "0",
+        };
         particlePositionX.textContent = formatNumber(selection.position.x);
         particlePositionY.textContent = formatNumber(selection.position.y);
         if (document.activeElement !== particleMassInput) {
           particleMassInput.value = formatNumber(selection.mass);
         }
         particleMassInput.removeAttribute("aria-invalid");
-        if (document.activeElement !== particleInitialVelocityInput) {
-          particleInitialVelocityInput.value = selection.initialVelocityText;
+        if (document.activeElement !== particleInitialVelocityXInput) {
+          particleInitialVelocityXInput.value = selection.initialVelocityText.x;
         }
-        particleInitialVelocityInput.removeAttribute("aria-invalid");
+        if (document.activeElement !== particleInitialVelocityYInput) {
+          particleInitialVelocityYInput.value = selection.initialVelocityText.y;
+        }
+        particleInitialVelocityXInput.removeAttribute("aria-invalid");
+        particleInitialVelocityYInput.removeAttribute("aria-invalid");
+        if (document.activeElement !== particleInitialSpeedInput) {
+          particleInitialSpeedInput.value = currentParticleInitialAngleText.speed;
+        }
+        if (document.activeElement !== particleInitialAngleInput) {
+          particleInitialAngleInput.value = currentParticleInitialAngleText.angle;
+        }
+        particleInitialSpeedInput.removeAttribute("aria-invalid");
+        particleInitialAngleInput.removeAttribute("aria-invalid");
+        const angleMode = selection.initialVelocityEditorMode === "angle";
+        velocityModeAngle.classList.toggle("is-active", angleMode);
+        velocityModeComponents.classList.toggle("is-active", !angleMode);
+        velocityModeAngle.setAttribute("aria-pressed", String(angleMode));
+        velocityModeComponents.setAttribute("aria-pressed", String(!angleMode));
+        initialVelocityAngleFields.hidden = !angleMode;
+        initialVelocityComponentFields.hidden = angleMode;
+        exactInitialVelocityFields = getExactInitialVelocityFields({
+          ...currentParticleInitialVelocityText,
+          ...currentParticleInitialAngleText,
+        });
+        for (const field of ["x", "y", "speed", "angle"] as const) {
+          refreshInitialVelocityField(field);
+        }
         particlePauseAtGreatestToggle.checked = selection.pauseAtGreatestHeight;
         particlePauseAtGroundToggle.checked = selection.pauseAtGroundContact;
         particlePauseAtGroundRow.hidden = !selection.groundEnabled;
-        setPhaseIntervalNote(kinematicPhaseNote, selection.phaseNote);
-        setKinematicOutputs(kinematicOutputs, selection.kinematics);
-        setSuvatAnalysis(
-          suvatEquations,
-          selection.suvatEquations,
+        particlePauseAtCoincidenceToggle.checked =
+          selection.pauseAtParticleCoincidence;
+        particlePauseTargetToggle.checked = selection.pauseAtVerticalTarget;
+        particlePauseTargetControl.hidden = !selection.pauseAtVerticalTarget;
+        particlePauseTargetLabel.textContent = selection.groundEnabled
+          ? "Height above ground"
+          : "Vertical displacement";
+        currentParticlePauseTargetText = selection.verticalPauseTargetText;
+        if (document.activeElement !== particlePauseTargetInput) {
+          particlePauseTargetInput.value = selection.verticalPauseTargetText;
+        }
+        particlePauseTargetInput.setAttribute(
+          "aria-label",
+          selection.groundEnabled
+            ? "Height above ground in metres"
+            : "Vertical displacement in metres",
         );
-        refreshExpandedSuvatEquation();
+        particlePauseTargetInput.removeAttribute("aria-invalid");
+        renderSelectedKinematicComponent();
         particlePropertiesScroll.scrollTop = preservedScrollTop;
         if (particleAnalysisExpanded) {
           particlePropertiesScrollTop = particlePropertiesScroll.scrollTop;
         }
       } else if (selection?.type === "ground") {
+        if (motionGraphDialog.open) motionGraphDialog.close();
+        currentParticleSelection = null;
         currentSuvatEquations = [];
         closeExpandedSuvatEquation();
         currentGroundFriction = selection.friction;
@@ -489,12 +1072,25 @@ export function createControls(callbacks: ControlCallbacks): Controls {
         groundFrictionInput.value = formatNumber(selection.friction);
         groundFrictionInput.removeAttribute("aria-invalid");
       } else {
+        if (motionGraphDialog.open) motionGraphDialog.close();
+        currentParticleSelection = null;
         currentSuvatEquations = [];
         closeExpandedSuvatEquation();
       }
     },
-    setPositiveDirection: (direction) => {
-      updatePositiveDirectionButtons(direction, positiveUp, positiveDown);
+    setCoordinateConvention: (convention) => {
+      updateDirectionButtons(
+        convention.positiveX === "right",
+        positiveRight,
+        positiveLeft,
+      );
+      updateDirectionButtons(
+        convention.positiveY === "up",
+        positiveUp,
+        positiveDown,
+      );
+      angleReferenceAxis.value = convention.angleReferenceAxis;
+      angleDirection.value = convention.angleDirection;
     },
     setTime: (time, enteredText, exactDisplay = null) => {
       currentDisplayedTime = time;
@@ -513,8 +1109,12 @@ export function createControls(callbacks: ControlCallbacks): Controls {
 
       if (showExactTime) {
         timeExactValue.replaceChildren(createAutoPauseTimeValue(exactDisplay));
-      } else if (document.activeElement !== timeInput) {
-        timeInput.value = currentTimeText;
+        setExactValueTooltip(timeExactValue, exactDisplay, time);
+      } else {
+        setExactValueTooltip(timeExactValue, null, time);
+        if (document.activeElement !== timeInput) {
+          timeInput.value = currentTimeText;
+        }
       }
       previousTime.disabled = time <= 0;
       resetTime.disabled = time <= 0;
@@ -536,10 +1136,23 @@ function createAutoPauseTimeValue(value: AutoPauseTimeDisplay): Element {
   if (value.kind === "square-root") {
     return createSquareRootValue(value.radicand, value.negative);
   }
+  if (value.kind === "rational-surd") {
+    return createRationalSurdValue(
+      value.numeratorCoefficient,
+      value.radicand,
+      value.denominator,
+    );
+  }
+  if (value.kind === "rational-trig") {
+    return createMathExpression(
+      formatAutoPauseTimeExactText(value),
+    );
+  }
   return createQuadraticSurdValue(
     value.linearTerm,
     value.radicand,
     value.denominator,
+    value.radicalSign,
   );
 }
 
@@ -580,8 +1193,35 @@ export function parseSignedValue(value: string): number | null {
   return Number.isFinite(parsedValue) ? parsedValue : null;
 }
 
+export function parseAngle(value: string): number | null {
+  const angle = parseSignedValue(value);
+  return angle !== null && angle > -180 && angle <= 180 ? angle : null;
+}
+
+export function replaceInitialVelocityFieldText<
+  Values extends Record<string, string>,
+  Field extends keyof Values,
+>(values: Values, changedField: Field, changedText: string): Values {
+  return { ...values, [changedField]: changedText };
+}
+
+export function getExactInitialVelocityFields(
+  values: Record<InitialVelocityField, string>,
+): Set<InitialVelocityField> {
+  return new Set(
+    (Object.keys(values) as InitialVelocityField[]).filter((field) =>
+      isSymbolicExactDisplay(values[field])
+    ),
+  );
+}
+
 function formatNumber(value: number): string {
   return String(Number(value.toFixed(3)));
+}
+
+function formatEditableVelocityDecimal(value: number): string {
+  const rounded = Number(value.toFixed(3));
+  return (Object.is(rounded, -0) ? 0 : rounded).toFixed(3);
 }
 
 export function formatTime(time: number): string {
@@ -594,27 +1234,28 @@ function getElement<T extends HTMLElement>(id: string): T {
   return element as T;
 }
 
-function updatePositiveDirectionButtons(
-  direction: VerticalPositiveDirection,
-  upButton: HTMLButtonElement,
-  downButton: HTMLButtonElement,
+function updateDirectionButtons(
+  firstIsPositive: boolean,
+  firstButton: HTMLButtonElement,
+  secondButton: HTMLButtonElement,
 ): void {
-  const upIsPositive = direction === "up";
-  upButton.classList.toggle("is-active", upIsPositive);
-  downButton.classList.toggle("is-active", !upIsPositive);
-  upButton.setAttribute("aria-pressed", String(upIsPositive));
-  downButton.setAttribute("aria-pressed", String(!upIsPositive));
+  firstButton.classList.toggle("is-active", firstIsPositive);
+  secondButton.classList.toggle("is-active", !firstIsPositive);
+  firstButton.setAttribute("aria-pressed", String(firstIsPositive));
+  secondButton.setAttribute("aria-pressed", String(!firstIsPositive));
 }
 
 function setKinematicOutputs(
   outputs: Record<keyof KinematicDisplayValues, HTMLOutputElement>,
   state: KinematicDisplayValues,
+  numericalState: Record<keyof KinematicDisplayValues, number>,
 ): void {
   for (const quantity of ["s", "u", "v", "a", "t"] as const) {
     const output = outputs[quantity];
     const value = state[quantity];
+    setExactValueTooltip(output, value, numericalState[quantity]);
+    output.classList.toggle("has-fraction", usesCompactKinematicText(value));
     if (typeof value !== "string") {
-      output.classList.remove("is-long-value");
       output.classList.add("has-square-root");
       output.replaceChildren(
         createSquareRootValue(value.radicand, value.negative),
@@ -623,17 +1264,102 @@ function setKinematicOutputs(
     }
 
     output.classList.remove("has-square-root");
-    output.classList.toggle(
-      "is-long-value",
-      !value.includes("/") && value.replace(/^[-−]/, "").length > 10,
-    );
     output.replaceChildren(createMathExpression(value));
   }
 }
 
+export function usesCompactKinematicText(
+  value: KinematicDisplayValues[keyof KinematicDisplayValues],
+): boolean {
+  return typeof value === "string"
+    ? value.includes("/")
+    : value.radicand.includes("/");
+}
+
+function setExactValueTooltip(
+  element: HTMLElement,
+  display: string | { kind: string } | null,
+  value: number,
+): void {
+  const tooltip = display === null
+    ? null
+    : getExactValueTooltip(display, value);
+  if (tooltip) {
+    element.dataset.exactApproximation = tooltip;
+    element.setAttribute("aria-description", `Approximately ${tooltip}`);
+  } else {
+    delete element.dataset.exactApproximation;
+    element.removeAttribute("aria-description");
+  }
+}
+
+function renderExpandedMotionGraphAnnotations(
+  container: HTMLElement,
+  annotations: RenderedMotionGraphAnnotation[],
+  graph: MotionGraphData,
+  quantity: MotionGraphQuantity,
+): void {
+  const labels = annotations.map(({ annotation, leftPercent, topPercent }) => {
+    const label = document.createElement("span");
+    const exactText = getMotionGraphAnnotationLabel(annotation);
+    label.className = "motion-graph-coordinate";
+    label.style.left = `${leftPercent}%`;
+    label.style.top = `${topPercent}%`;
+    label.setAttribute("aria-label", exactText);
+    label.append(createMathExpression(exactText));
+
+    const tooltip = getMotionGraphAnnotationTooltip(annotation);
+    if (tooltip) {
+      label.dataset.exactApproximation = tooltip;
+      label.setAttribute("aria-description", `Approximately ${tooltip}`);
+      label.tabIndex = 0;
+    }
+    return label;
+  });
+  container.replaceChildren(...labels);
+  const bounds = container.getBoundingClientRect();
+  if (bounds.width <= 0 || bounds.height <= 0) return;
+  labels.forEach((label, index) => {
+    const rendered = annotations[index];
+    if (!rendered) return;
+    const labelBounds = label.getBoundingClientRect();
+    const placement = chooseMotionGraphAnnotationPlacement(
+      rendered.annotation,
+      graph,
+      quantity,
+      labelBounds.width * EXPANDED_MOTION_GRAPH_WIDTH / bounds.width,
+      labelBounds.height * EXPANDED_MOTION_GRAPH_HEIGHT / bounds.height,
+    );
+    label.classList.add(`motion-graph-coordinate--${placement}`);
+  });
+}
+
+export function getMotionGraphAnnotationTooltip(
+  annotation: MotionGraphAnnotation,
+): string | null {
+  const timeText = formatWorkingValue(annotation.timeDisplay);
+  const valueText = formatWorkingValue(annotation.valueDisplay);
+  if (annotation.kind === "turning-point") {
+    const hasSymbolicCoordinate =
+      getExactValueTooltip(timeText, annotation.time) !== null ||
+      getExactValueTooltip(valueText, annotation.value) !== null;
+    if (!hasSymbolicCoordinate) return null;
+    return `(${formatThreeDecimalPlaces(annotation.time)}, ${formatThreeDecimalPlaces(annotation.value)}) (3 d.p.)`;
+  }
+
+  return Math.abs(annotation.value) < 1e-10
+    ? getExactValueTooltip(timeText, annotation.time)
+    : getExactValueTooltip(valueText, annotation.value);
+}
+
+function formatThreeDecimalPlaces(value: number): string {
+  const rounded = Number(value.toFixed(3));
+  return Object.is(rounded, -0) ? "0.000" : rounded.toFixed(3);
+}
+
 function setSuvatAnalysis(
   equationsContainer: HTMLElement,
-  equations: SuvatEquationResult[],
+  equations: KinematicEquationResult[],
 ): void {
   equationsContainer.classList.remove("is-hidden");
   ensureSuvatEquationElements(equationsContainer, equations);
@@ -662,32 +1388,47 @@ function setPhaseIntervalNote(
   changedLine.className = "phase-interval-note-line";
   changedLine.append(
     document.createTextNode("Acceleration changed at "),
-    createMathExpression(`t = ${note.startTime} s`),
+    createExactPhaseTimeMath(note.startTime, (text) => `t = ${text} s`),
     document.createTextNode("."),
   );
   const intervalLine = document.createElement("span");
   intervalLine.className = "phase-interval-note-line";
   intervalLine.append(
-    document.createTextNode("SUVAT interval: "),
-    createMathExpression(`${note.startTime} s`),
+    document.createTextNode("Analysis interval: "),
+    createExactPhaseTimeMath(note.startTime, (text) => `${text} s`),
     document.createTextNode(" to "),
-    createMathExpression(`${note.endTime} s`),
+    createExactPhaseTimeMath(note.endTime, (text) => `${text} s`),
     document.createTextNode("."),
   );
   const calculationLine = document.createElement("span");
   calculationLine.className = "phase-interval-note-line";
   calculationLine.append(
-    createMathExpression(
-      `${note.endTime} s − ${note.startTime} s = ${note.phaseTime} s`,
-    ),
+    createExactPhaseTimeMath(note.endTime, (text) => `${text} s`),
+    document.createTextNode(" − "),
+    createExactPhaseTimeMath(note.startTime, (text) => `${text} s`),
+    document.createTextNode(" = "),
+    createExactPhaseTimeMath(note.phaseTime, (text) => `${text} s`),
     document.createTextNode("."),
   );
   element.replaceChildren(changedLine, intervalLine, calculationLine);
 }
 
+function createExactPhaseTimeMath(
+  time: ExactPhaseTime,
+  expression: (text: string) => string,
+): HTMLElement {
+  const wrapper = document.createElement("span");
+  const tooltip = formatExactValueTooltip(time.value);
+  wrapper.className = "phase-exact-time";
+  wrapper.dataset.exactApproximation = tooltip;
+  wrapper.setAttribute("aria-description", `Approximately ${tooltip}`);
+  wrapper.append(createMathExpression(expression(time.text)));
+  return wrapper;
+}
+
 function populateSuvatEquationElement(
   element: HTMLElement,
-  equation: SuvatEquationResult,
+  equation: KinematicEquationResult,
 ): void {
   const formula = element.querySelector<HTMLElement>(".suvat-formula");
   const substitution = element.querySelector<HTMLElement>(".suvat-substitution");
@@ -716,7 +1457,7 @@ function populateSuvatEquationElement(
     expression.append(
       createSquareRootExpression(
         squareRootWorking.radicand,
-        squareRootWorking.negative,
+        squareRootWorking.sign,
       ),
     );
     const valueLines = squareRootWorking.finalValues.map((finalValue) => {
@@ -735,7 +1476,7 @@ function populateSuvatEquationElement(
 
 function ensureSuvatEquationElements(
   container: HTMLElement,
-  equations: SuvatEquationResult[],
+  equations: KinematicEquationResult[],
 ): void {
   const existingIds = Array.from(
     container.querySelectorAll<HTMLElement>("[data-suvat-equation]"),

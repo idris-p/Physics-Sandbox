@@ -19,7 +19,7 @@ describe("particle render geometry", () => {
     expect(zoomedGeometry.radius * 2).toBe(camera.pixelsPerMetre);
   });
 
-  it("centres the visual circle on the mathematical point in free space", () => {
+  it("centres the visual circle on the mathematical point", () => {
     const camera = createCamera(800, 600);
     const pointPosition = { x: 100, y: 200 };
     const geometry = getRenderedParticleGeometry(pointPosition, camera);
@@ -27,16 +27,23 @@ describe("particle render geometry", () => {
     expect(geometry.centre).toEqual(pointPosition);
   });
 
-  it("offsets the circle only enough to prevent enabled-ground overlap", () => {
+  it("keeps the mathematical point as its centre on enabled ground", () => {
     const camera = createCamera(800, 600);
     const groundPoint = worldToScreen({ x: 2, y: 0 }, camera);
-    const geometry = getRenderedParticleGeometry(groundPoint, camera, {
-      groundEnabled: true,
-    });
-    const groundScreenY = worldToScreen({ x: 0, y: 0 }, camera).y;
+    const geometry = getRenderedParticleGeometry(groundPoint, camera);
 
-    expect(geometry.centre.x).toBe(groundPoint.x);
-    expect(geometry.centre.y + geometry.radius).toBe(groundScreenY);
+    expect(geometry.centre).toEqual(groundPoint);
+  });
+
+  it("never changes its centre while crossing the former ground-offset boundary", () => {
+    const camera = createCamera(800, 600);
+
+    for (const height of [0, 0.1, 0.49, 0.5, 0.51, 1]) {
+      const mathematicalPoint = worldToScreen({ x: 3, y: height }, camera);
+      expect(
+        getRenderedParticleGeometry(mathematicalPoint, camera).centre,
+      ).toEqual(mathematicalPoint);
+    }
   });
 
   it("groups particles that occupy the same mathematical position", () => {

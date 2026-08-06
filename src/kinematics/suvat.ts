@@ -1,13 +1,14 @@
 import {
-  addRationals,
+  absoluteDisplayValue,
+  addDisplayValues,
   derivedValue,
   enteredDecimal,
   formatFinalValue,
   formatSquareRootValue,
   formatWorkingValue,
-  multiplyRationals,
+  multiplyDisplayValues,
   rationalFromDecimal,
-  squareRational,
+  squareDisplayValue,
   type DisplayValue,
   type FinalValueDisplay,
   type Rational,
@@ -22,8 +23,8 @@ export type SuvatEquationId =
   | "v2-u2-2as"
   | "s-v-t-a";
 
-export interface SuvatEquationResult {
-  id: SuvatEquationId;
+export interface KinematicEquationResult {
+  id: string;
   formula: string;
   substitution: string;
   result: number;
@@ -33,17 +34,25 @@ export interface SuvatEquationResult {
   squareRootWorking?: SuvatSquareRootWorking;
 }
 
+export interface SuvatEquationResult extends KinematicEquationResult {
+  id: SuvatEquationId;
+}
+
 export interface SuvatSquareRootWorking {
   radicand: string;
-  negative: boolean;
+  sign: "both";
   unit: string;
   finalValues: FinalValueDisplay[];
 }
 
 export interface SuvatEnteredValues {
+  sDisplay?: DisplayValue;
   u?: string;
+  uDisplay?: DisplayValue;
+  vDisplay?: DisplayValue;
   a?: string;
   t?: string;
+  tDisplay?: DisplayValue;
 }
 
 type SuvatDisplayState = Record<keyof VerticalKinematicState, DisplayValue>;
@@ -103,7 +112,7 @@ export const SUVAT_EQUATIONS: readonly SuvatEquationDefinition[] = [
     substitute: ({ u, a, s }) =>
       `${squaredValue(u)} + 2${factor(a)}${factor(s)}`,
     displayResult: ({ v }) =>
-      derivedValue(v.value ** 2, v.exact ? squareRational(v.exact) : undefined),
+      squareDisplayValue(v),
   },
   {
     id: "s-v-t-a",
@@ -168,24 +177,36 @@ function createDisplayState(
   enteredValues: SuvatEnteredValues,
   useFormulaExactness = true,
 ): SuvatDisplayState {
-  const u = createInputDisplayValue(state.u, enteredValues.u);
+  const u = enteredValues.uDisplay ??
+    createInputDisplayValue(state.u, enteredValues.u);
   const a = createInputDisplayValue(state.a, enteredValues.a);
-  const t = createInputDisplayValue(state.t, enteredValues.t);
+  const t = enteredValues.tDisplay ??
+    createInputDisplayValue(state.t, enteredValues.t);
 
   return {
     u,
     a,
     t,
-    v: createGeneratedDisplayValue(
-      state.v,
-      useFormulaExactness ? exactVelocity(u.exact, a.exact, t.exact) : undefined,
-    ),
-    s: createGeneratedDisplayValue(
-      state.s,
-      useFormulaExactness
-        ? exactDisplacement(u.exact, a.exact, t.exact)
-        : undefined,
-    ),
+    v: enteredValues.vDisplay ?? (useFormulaExactness
+      ? addDisplayValues(
+          state.v,
+          u,
+          multiplyDisplayValues(a.value * t.value, a, t),
+        )
+      : createGeneratedDisplayValue(state.v)),
+    s: enteredValues.sDisplay ?? (useFormulaExactness
+      ? addDisplayValues(
+          state.s,
+          multiplyDisplayValues(u.value * t.value, u, t),
+          multiplyDisplayValues(
+            0.5 * a.value * t.value ** 2,
+            derivedValue(0.5, { numerator: 1n, denominator: 2n }),
+            a,
+            t,
+            t,
+          ),
+        )
+      : createGeneratedDisplayValue(state.s)),
   };
 }
 
@@ -207,37 +228,19 @@ function createGeneratedDisplayValue(
   return derivedValue(value, rationalFromDecimal(String(value)));
 }
 
-function exactVelocity(
-  u: Rational | undefined,
-  a: Rational | undefined,
-  t: Rational | undefined,
-): Rational | undefined {
-  if (!u || !a || !t) return undefined;
-  return addRationals(u, multiplyRationals(a, t));
-}
-
-function exactDisplacement(
-  u: Rational | undefined,
-  a: Rational | undefined,
-  t: Rational | undefined,
-): Rational | undefined {
-  if (!u || !a || !t) return undefined;
-  const half = { numerator: 1n, denominator: 2n };
-  return addRationals(
-    multiplyRationals(u, t),
-    multiplyRationals(half, multiplyRationals(a, squareRational(t))),
-  );
-}
-
 function createSquareRootWorking(
   velocity: DisplayValue,
   squaredVelocity: DisplayValue,
 ): SuvatSquareRootWorking {
+  const magnitude = absoluteDisplayValue(velocity);
   return {
     radicand: formatWorkingValue(squaredVelocity),
-    negative: velocity.value < 0,
+    sign: "both",
     unit: "m s⁻¹",
-    finalValues: formatFinalValue(velocity),
+    finalValues: formatFinalValue(magnitude).map((value) => ({
+      ...value,
+      value: `±${value.value}`,
+    })),
   };
 }
 
@@ -250,7 +253,7 @@ function squaredValue(value: DisplayValue): string {
 }
 
 function squaredFactor(value: DisplayValue): string {
-  return `(${formatWorkingValue(value)}²)`;
+  return `${factor(value)}²`;
 }
 
 function formatSignedSum(left: DisplayValue, right: DisplayValue): string {

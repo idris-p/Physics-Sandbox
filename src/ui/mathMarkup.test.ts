@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest";
 import { tokenizeMathText } from "./mathMarkup";
 
 describe("mathematical markup tokenisation", () => {
+  it("treats arctan as a mathematical function", () => {
+    expect(tokenizeMathText("arctan(4/3)")).toEqual([
+      { kind: "function", value: "arctan" },
+      { kind: "operator", value: "(" },
+      { kind: "fraction", numerator: "4", denominator: "3", exponent: undefined },
+      { kind: "operator", value: ")" },
+    ]);
+  });
   it("recognises exact fractions as a single stacked-fraction token", () => {
     expect(tokenizeMathText("36297/10000")).toEqual([
       {
@@ -33,5 +41,44 @@ describe("mathematical markup tokenisation", () => {
       kind: "operator",
       value: "−",
     });
+  });
+
+  it("treats plus-or-minus as a mathematical operator", () => {
+    expect(tokenizeMathText("±3.5")[0]).toEqual({
+      kind: "operator",
+      value: "±",
+    });
+  });
+
+  it("keeps trig functions together and recognises exact surds", () => {
+    expect(tokenizeMathText("10 sin(53°)")).toContainEqual({
+      kind: "function",
+      value: "sin",
+    });
+    expect(tokenizeMathText("5√(3)")).toContainEqual({
+      kind: "square-root",
+      radicand: "3",
+    });
+  });
+
+  it("recognises a rational surd as one stacked mathematical value", () => {
+    expect(tokenizeMathText("25√(3)/49")).toEqual([{
+      kind: "rational-surd",
+      numeratorCoefficient: "25",
+      radicand: "3",
+      denominator: "49",
+    }]);
+    expect(tokenizeMathText("√(3)/2")).toEqual([{
+      kind: "rational-surd",
+      numeratorCoefficient: "1",
+      radicand: "3",
+      denominator: "2",
+    }]);
+    expect(tokenizeMathText("−√(3)/2")).toEqual([{
+      kind: "rational-surd",
+      numeratorCoefficient: "−1",
+      radicand: "3",
+      denominator: "2",
+    }]);
   });
 });

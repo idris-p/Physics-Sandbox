@@ -1,9 +1,7 @@
 import type { ParticleState } from "../model/Particle";
-import {
-  worldVerticalToScalar,
-  type VerticalPositiveDirection,
-} from "./signConvention";
+import type { VerticalPositiveDirection } from "./signConvention";
 import type { KinematicPhase } from "./kinematicPhase";
+import { calculateParticleKinematicState2D } from "./particleKinematics2D";
 
 export interface VerticalKinematicState {
   s: number;
@@ -19,14 +17,8 @@ export function calculateVerticalKinematicState(
   sceneTime: number,
   positiveDirection: VerticalPositiveDirection,
 ): VerticalKinematicState {
-  return {
-    s: worldVerticalToScalar(
-      currentState.position.y - phase.initialPosition.y,
-      positiveDirection,
-    ),
-    u: worldVerticalToScalar(phase.initialVelocity.y, positiveDirection),
-    v: worldVerticalToScalar(currentState.velocity.y, positiveDirection),
-    a: worldVerticalToScalar(phase.acceleration.y, positiveDirection),
-    t: Math.max(0, sceneTime - phase.startTime),
-  };
+  return calculateParticleKinematicState2D(phase, currentState, sceneTime, {
+    positiveX: "right",
+    positiveY: positiveDirection,
+  }).y;
 }

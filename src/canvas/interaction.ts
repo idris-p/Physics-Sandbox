@@ -93,10 +93,6 @@ export function attachCanvasInteraction(options: InteractionOptions): () => void
       pointer,
       particleStates,
       options.getCamera(),
-      {
-        groundEnabled: options.isGroundEnabled(),
-        groundHeight: options.getGroundHeight(),
-      },
     );
 
     if (hitParticleId) {
@@ -277,10 +273,7 @@ export function attachCanvasInteraction(options: InteractionOptions): () => void
       const canvasPoint = getCanvasPoint(event, options.canvas);
       const freePosition = getPlacement(canvasPoint, options, false);
       const mathematicalPoint = worldToScreen(freePosition, camera);
-      const geometry = getRenderedParticleGeometry(mathematicalPoint, camera, {
-        groundEnabled: options.isGroundEnabled(),
-        groundHeight: options.getGroundHeight(),
-      });
+      const geometry = getRenderedParticleGeometry(mathematicalPoint, camera);
 
       previewCentre = {
         x: canvasBounds.left + geometry.centre.x,
@@ -378,10 +371,7 @@ function updateWorldDragPreview(
   const camera = options.getCamera();
   const canvasBounds = options.canvas.getBoundingClientRect();
   const mathematicalPoint = worldToScreen(position, camera);
-  const geometry = getRenderedParticleGeometry(mathematicalPoint, camera, {
-    groundEnabled: options.isGroundEnabled(),
-    groundHeight: options.getGroundHeight(),
-  });
+  const geometry = getRenderedParticleGeometry(mathematicalPoint, camera);
 
   updateDragPreview(
     preview,

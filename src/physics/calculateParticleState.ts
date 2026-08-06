@@ -76,9 +76,10 @@ export function calculateParticleState(
       impactTime !== null &&
       isAfterGroundImpact(safeTime, impactTime)
     ) {
+      const impactX = initialPosition.x + initialVelocity.x * impactTime;
       return {
         id: particle.id,
-        position: { x: initialPosition.x, y: groundHeight },
+        position: { x: impactX, y: groundHeight },
         velocity: { x: 0, y: 0 },
         acceleration: { x: 0, y: 0 },
       };
@@ -88,7 +89,7 @@ export function calculateParticleState(
   return {
     id: particle.id,
     position: {
-      x: initialPosition.x,
+      x: initialPosition.x + initialVelocity.x * safeTime,
       y: isFirstContact
         ? groundHeight
         : initialPosition.y +
@@ -96,7 +97,7 @@ export function calculateParticleState(
           0.5 * gravity * safeTime ** 2,
     },
     velocity: {
-      x: 0,
+      x: initialVelocity.x,
       y: initialVelocity.y - gravity * safeTime,
     },
     acceleration: { x: 0, y: -gravity },

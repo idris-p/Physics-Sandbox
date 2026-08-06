@@ -25,6 +25,23 @@ export type MathToken =
       kind: "number" | "identifier" | "operator" | "text" | "space";
       value: string;
       exponent?: string;
+    }
+  | {
+      kind: "function";
+      value: "sin" | "cos" | "arctan";
+      exponent?: string;
+    }
+  | {
+      kind: "square-root";
+      radicand: string;
+      exponent?: string;
+    }
+  | {
+      kind: "rational-surd";
+      numeratorCoefficient: string;
+      radicand: string;
+      denominator: string;
+      exponent?: string;
     };
 
 export function tokenizeMathText(text: string): MathToken[] {
@@ -36,6 +53,36 @@ export function tokenizeMathText(text: string): MathToken[] {
     if (space) {
       tokens.push({ kind: "space", value: " " });
       remaining = remaining.slice(space[0].length);
+      continue;
+    }
+
+    const rationalSurd = remaining.match(/^([−-]?)(\d*)√\(([^()]*)\)\/(\d+)/);
+    if (rationalSurd) {
+      const sign = rationalSurd[1] === "-" ? "−" : rationalSurd[1];
+      tokens.push({
+        kind: "rational-surd",
+        numeratorCoefficient: `${sign}${rationalSurd[2] || "1"}`,
+        radicand: rationalSurd[3],
+        denominator: rationalSurd[4],
+      });
+      remaining = remaining.slice(rationalSurd[0].length);
+      continue;
+    }
+
+    const squareRoot = remaining.match(/^√\(([^()]*)\)/);
+    if (squareRoot) {
+      tokens.push({ kind: "square-root", radicand: squareRoot[1] });
+      remaining = remaining.slice(squareRoot[0].length);
+      continue;
+    }
+
+    const trigFunction = remaining.match(/^(sin|cos|arctan)(?=\()/);
+    if (trigFunction) {
+      tokens.push({
+        kind: "function",
+        value: trigFunction[1] as "sin" | "cos" | "arctan",
+      });
+      remaining = remaining.slice(trigFunction[0].length);
       continue;
     }
 
@@ -69,7 +116,7 @@ export function tokenizeMathText(text: string): MathToken[] {
     }
 
     const character = remaining[0];
-    if ("=+−-()[]·×≈".includes(character)) {
+    if ("=+−-±()[]·×≈".includes(character)) {
       tokens.push({ kind: "operator", value: normaliseOperator(character) });
     } else {
       tokens.push({ kind: "text", value: character });
@@ -116,13 +163,19 @@ export function createMathResult(
 
 export function createSquareRootExpression(
   radicand: string,
-  negative: boolean,
+  sign: "positive" | "negative" | "both" = "positive",
 ): Element {
   const math = createMathElement("math");
   math.setAttribute("class", "suvat-math");
   math.setAttribute(
     "aria-label",
-    `v equals ${negative ? "negative " : ""}the square root of ${radicand}`,
+    `v equals ${
+      sign === "both"
+        ? "plus or minus "
+        : sign === "negative"
+          ? "negative "
+          : ""
+    }the square root of ${radicand}`,
   );
 
   const squareRoot = createMathElement("msqrt");
@@ -131,7 +184,8 @@ export function createSquareRootExpression(
     createMathElementWithText("mi", "v", { mathvariant: "normal" }),
     createMathElementWithText("mo", "="),
   );
-  if (negative) math.append(createMathElementWithText("mo", "−"));
+  if (sign === "negative") math.append(createMathElementWithText("mo", "−"));
+  if (sign === "both") math.append(createMathElementWithText("mo", "±"));
   math.append(squareRoot);
   return math;
 }
@@ -158,12 +212,13 @@ export function createQuadraticSurdValue(
   linearTerm: string,
   radicand: string,
   denominator: string,
+  radicalSign: "plus" | "minus" = "plus",
 ): Element {
   const math = createMathElement("math");
   math.setAttribute("class", "suvat-math");
   math.setAttribute(
     "aria-label",
-    `${linearTerm} plus the square root of ${radicand}, divided by ${denominator}`,
+    `${linearTerm} ${radicalSign} the square root of ${radicand}, divided by ${denominator}`,
   );
 
   const numerator = createMathElement("mrow");
@@ -171,7 +226,7 @@ export function createQuadraticSurdValue(
   squareRoot.append(...createMathNodes(radicand));
   numerator.append(
     ...createMathNodes(linearTerm),
-    createMathElementWithText("mo", "+"),
+    createMathElementWithText("mo", radicalSign === "plus" ? "+" : "−"),
     squareRoot,
   );
 
@@ -185,6 +240,23 @@ export function createQuadraticSurdValue(
   denominatorRow.append(...createMathNodes(denominator));
   fraction.append(numerator, denominatorRow);
   math.append(fraction);
+  return math;
+}
+
+export function createRationalSurdValue(
+  numeratorCoefficient: string,
+  radicand: string,
+  denominator: string,
+): Element {
+  const math = createMathElement("math");
+  math.setAttribute("class", "suvat-math");
+  math.setAttribute(
+    "aria-label",
+    `${numeratorCoefficient} times the square root of ${radicand}, divided by ${denominator}`,
+  );
+  math.append(
+    createRationalSurdNode(numeratorCoefficient, radicand, denominator),
+  );
   return math;
 }
 
@@ -212,6 +284,23 @@ function createTokenNode(token: MathToken): Element {
         mathvariant: "normal",
       });
       break;
+    case "function":
+      node = createMathElementWithText("mi", token.value, {
+        mathvariant: "normal",
+      });
+      break;
+    case "square-root": {
+      node = createMathElement("msqrt");
+      node.append(...createMathNodes(token.radicand));
+      break;
+    }
+    case "rational-surd":
+      node = createRationalSurdNode(
+        token.numeratorCoefficient,
+        token.radicand,
+        token.denominator,
+      );
+      break;
     case "operator":
       node = createMathElementWithText("mo", token.value);
       break;
@@ -224,6 +313,29 @@ function createTokenNode(token: MathToken): Element {
   }
 
   return token.exponent ? createSuperscript(node, token.exponent) : node;
+}
+
+function createRationalSurdNode(
+  numeratorCoefficient: string,
+  radicand: string,
+  denominator: string,
+): Element {
+  const numerator = createMathElement("mrow");
+  if (numeratorCoefficient === "−1" || numeratorCoefficient === "-1") {
+    numerator.append(createMathElementWithText("mo", "−"));
+  } else if (numeratorCoefficient !== "1") {
+    numerator.append(...createMathNodes(numeratorCoefficient));
+  }
+  const squareRoot = createMathElement("msqrt");
+  squareRoot.append(...createMathNodes(radicand));
+  numerator.append(squareRoot);
+
+  if (denominator === "1") return numerator;
+  const fraction = createMathElement("mfrac");
+  const denominatorRow = createMathElement("mrow");
+  denominatorRow.append(...createMathNodes(denominator));
+  fraction.append(numerator, denominatorRow);
+  return fraction;
 }
 
 function createSuperscript(base: Element, exponent: string): Element {

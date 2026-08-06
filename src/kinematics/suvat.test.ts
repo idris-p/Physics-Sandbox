@@ -3,6 +3,17 @@ import { createParticle } from "../model/Particle";
 import { calculateGroundImpactTime, calculateParticleState } from "../physics/calculateParticleState";
 import { determineActiveKinematicPhase } from "./kinematicPhase";
 import { calculateVerticalKinematicState } from "./verticalKinematics";
+import { createPolarVelocityComponentDisplay } from "./polarVelocityExact";
+import { editParticleInitialVelocityAngle } from "../simulation/editInitialConditions";
+import {
+  createAutoPauseTimeDisplayValue,
+  getGroundContactPauseTimeDisplay,
+} from "../simulation/autoPauseTimeDisplay";
+import {
+  exactExpression,
+  exactSurdValue,
+  exactTrigValue,
+} from "./exactDisplay";
 import {
   calculateKinematicDisplayValues,
   calculateSuvatEquationResults,
@@ -53,7 +64,7 @@ describe("SUVAT equations", () => {
     expect(velocity?.substitution).toBe("2.5 + (-9.8)(0.3)");
     expect(velocity?.finalValues).toEqual([{ value: "-0.44", rounded: false }]);
     expect(results.find(({ id }) => id === "s-u-t-a")?.substitution).toContain(
-      "1/2(-9.8)(0.3²)",
+      "1/2(-9.8)(0.3)²",
     );
   });
 
@@ -168,16 +179,16 @@ describe("SUVAT equations", () => {
     ]);
     expect(noTimeEquation?.squareRootWorking).toEqual({
       radicand: "13.17472209",
-      negative: false,
+      sign: "both",
       unit: "m s⁻¹",
       finalValues: [
-        { value: "3.6297", rounded: false },
-        { value: "3.630", rounded: true },
+        { value: "±3.6297", rounded: false },
+        { value: "±3.630", rounded: true },
       ],
     });
   });
 
-  it("uses the known negative velocity root after evaluating v squared", () => {
+  it("shows both algebraic roots while kinematics keeps the relevant negative velocity", () => {
     const results = calculateSuvatEquationResults(
       { s: -0.6714945, u: 0, v: -3.6297, a: -9.81, t: 0.37 },
       { u: "0", a: "-9.81", t: "0.37" },
@@ -189,15 +200,262 @@ describe("SUVAT equations", () => {
 
     expect(noTimeEquation?.squareRootWorking).toMatchObject({
       radicand: "13.17472209",
+      sign: "both",
+    });
+    expect(
+      calculateKinematicDisplayValues(
+        { s: -0.6714945, u: 0, v: -3.6297, a: -9.81, t: 0.37 },
+        { u: "0", a: "-9.81", t: "0.37" },
+      ).v,
+    ).toEqual({
+      kind: "square-root",
+      radicand: "1317472209/100000000",
       negative: true,
     });
     expect(averageVelocity?.substitution).toBe(
       "1/2(0 − 3.6297)(0.37)",
     );
     expect(noTimeEquation?.squareRootWorking?.finalValues).toEqual([
-      { value: "-3.6297", rounded: false },
-      { value: "-3.630", rounded: true },
+      { value: "±3.6297", rounded: false },
+      { value: "±3.630", rounded: true },
     ]);
+  });
+
+  it("carries an unresolved trig component through working before rounding finals", () => {
+    const u = 10 * Math.sin(53 * Math.PI / 180);
+    const state = {
+      s: u * 0.3 - 0.5 * 9.8 * 0.3 ** 2,
+      u,
+      v: u - 9.8 * 0.3,
+      a: -9.8,
+      t: 0.3,
+    };
+    const uDisplay = exactExpression(u, "10 sin(53°)");
+    const kinematics = calculateKinematicDisplayValues(state, {
+      uDisplay,
+      a: "-9.8",
+      t: "0.3",
+    });
+    const results = calculateSuvatEquationResults(state, {
+      uDisplay,
+      a: "-9.8",
+      t: "0.3",
+    });
+    const velocity = results.find(({ id }) => id === "v-u-at");
+
+    expect(kinematics.u).toBe("10 sin(53°)");
+    expect(kinematics.v).toContain("sin(53°)");
+    expect(kinematics.s).toContain("sin(53°)");
+    expect(velocity?.substitution).toContain("10 sin(53°)");
+    expect(velocity?.finalValues[0]).toEqual({
+      value: expect.stringContaining("sin(53°)"),
+      rounded: false,
+    });
+    expect(velocity?.finalValues[1].rounded).toBe(true);
+  });
+
+  it("carries an exact surd component through SUVAT working", () => {
+    const u = 5 * Math.sqrt(3);
+    const state = { s: u, u, v: u - 1, a: -1, t: 1 };
+    const uDisplay = exactExpression(u, "5√(3)");
+    const result = calculateSuvatEquationResults(state, {
+      uDisplay,
+      a: "-1",
+      t: "1",
+    }).find(({ id }) => id === "v-u-at");
+
+    expect(result?.substitution).toContain("5√(3)");
+    expect(result?.finalValues[0].value).toContain("5√(3)");
+    expect(result?.finalValues[1].rounded).toBe(true);
+  });
+
+  it("reuses an exact rational-surd pause time instead of fitting a fraction", () => {
+    const time = 25 * Math.sqrt(3) / 49;
+    const timeDisplay = exactExpression(time, "25√(3)/49");
+    const values = calculateKinematicDisplayValues(
+      { s: 0, u: 0, v: 0, a: 0, t: time },
+      { u: "0", a: "0", tDisplay: timeDisplay },
+    );
+    const result = calculateSuvatEquationResults(
+      { s: 0, u: 0, v: 0, a: 0, t: time },
+      { u: "0", a: "0", tDisplay: timeDisplay },
+    )[0];
+
+    expect(values.t).toBe("25√(3)/49");
+    expect(result.substitution).toContain("25√(3)/49");
+  });
+
+  it("matches the exact greatest-height values for a 10 m/s launch at 60 degrees", () => {
+    const u = 5 * Math.sqrt(3);
+    const t = 25 * Math.sqrt(3) / 49;
+    const s = 375 / 98;
+    const state = { s, u, v: 0, a: -9.8, t };
+    const enteredValues = {
+      uDisplay: exactSurdValue(
+        u,
+        { numerator: 5n, denominator: 1n },
+        3n,
+      ),
+      a: "-9.8",
+      tDisplay: exactSurdValue(
+        t,
+        { numerator: 25n, denominator: 49n },
+        3n,
+      ),
+    };
+
+    expect(calculateKinematicDisplayValues(state, enteredValues)).toEqual({
+      s: "375/98",
+      u: "5√(3)",
+      v: "0",
+      a: "-9.8",
+      t: "25√(3)/49",
+    });
+
+    const results = calculateSuvatEquationResults(state, enteredValues);
+    expect(results.find(({ id }) => id === "v-u-at")?.finalValues).toEqual([
+      { value: "0", rounded: false },
+    ]);
+    for (const id of ["s-u-t-a", "s-average-velocity", "s-v-t-a"] as const) {
+      expect(results.find((result) => result.id === id)?.finalValues).toEqual([
+        { value: "375/98", rounded: false },
+        { value: "3.827", rounded: true },
+      ]);
+    }
+    expect(results.find(({ id }) => id === "v2-u2-2as")?.finalValues).toEqual([
+      { value: "0", rounded: false },
+    ]);
+    expect(results.find(({ id }) => id === "s-u-t-a")?.substitution).toBe(
+      "(5√(3))(25√(3)/49) + 1/2(-9.8)(25√(3)/49)²",
+    );
+  });
+
+  it("simplifies the complete greatest-height analysis for an exact trig angle", () => {
+    const sine = Math.sin(53 * Math.PI / 180);
+    const u = 10 * sine;
+    const t = 50 / 49 * sine;
+    const s = 250 / 49 * sine ** 2;
+    const state = { s, u, v: 0, a: -9.8, t };
+    const enteredValues = {
+      uDisplay: exactTrigValue(
+        u,
+        { numerator: 10n, denominator: 1n },
+        "sin" as const,
+        "53",
+      ),
+      a: "-9.8",
+      tDisplay: exactTrigValue(
+        t,
+        { numerator: 50n, denominator: 49n },
+        "sin" as const,
+        "53",
+      ),
+    };
+
+    expect(calculateKinematicDisplayValues(state, enteredValues)).toEqual({
+      s: "250/49 sin²(53°)",
+      u: "10 sin(53°)",
+      v: "0",
+      a: "-9.8",
+      t: "50/49 sin(53°)",
+    });
+
+    const results = calculateSuvatEquationResults(state, enteredValues);
+    expect(results.find(({ id }) => id === "v-u-at")?.finalValues).toEqual([
+      { value: "0", rounded: false },
+    ]);
+    for (const id of ["s-u-t-a", "s-average-velocity", "s-v-t-a"] as const) {
+      expect(results.find((result) => result.id === id)?.finalValues).toEqual([
+        { value: "250/49 sin²(53°)", rounded: false },
+        { value: "3.254", rounded: true },
+      ]);
+    }
+    expect(results.find(({ id }) => id === "v2-u2-2as")?.finalValues).toEqual([
+      { value: "0", rounded: false },
+    ]);
+  });
+
+  it("cancels exact trig displacement at same-height ground contact", () => {
+    const sine = Math.sin(50 * Math.PI / 180);
+    const u = 10 * sine;
+    const t = 100 / 49 * sine;
+    const state = { s: 0, u, v: -u, a: -9.8, t };
+    const enteredValues = {
+      uDisplay: exactTrigValue(
+        u,
+        { numerator: 10n, denominator: 1n },
+        "sin" as const,
+        "50",
+      ),
+      a: "-9.8",
+      tDisplay: exactTrigValue(
+        t,
+        { numerator: 100n, denominator: 49n },
+        "sin" as const,
+        "50",
+      ),
+    };
+
+    expect(calculateKinematicDisplayValues(state, enteredValues)).toEqual({
+      s: "0",
+      u: "10 sin(50°)",
+      v: "-10 sin(50°)",
+      a: "-9.8",
+      t: "100/49 sin(50°)",
+    });
+    const results = calculateSuvatEquationResults(state, enteredValues);
+    for (const id of ["s-u-t-a", "s-average-velocity", "s-v-t-a"] as const) {
+      expect(results.find((result) => result.id === id)?.finalValues).toEqual([
+        { value: "0", rounded: false },
+      ]);
+    }
+  });
+
+  it("cancels the same contact displacement with downward-positive coordinates", () => {
+    const sine = Math.sin(50 * Math.PI / 180);
+    const u = -10 * sine;
+    const t = 100 / 49 * sine;
+    const values = calculateKinematicDisplayValues(
+      { s: 0, u, v: -u, a: 9.8, t },
+      {
+        uDisplay: exactTrigValue(
+          u,
+          { numerator: -10n, denominator: 1n },
+          "sin",
+          "50",
+        ),
+        a: "9.8",
+        tDisplay: exactTrigValue(
+          t,
+          { numerator: 100n, denominator: 49n },
+          "sin",
+          "50",
+        ),
+      },
+    );
+
+    expect(values.s).toBe("0");
+    expect(values.v).toBe("10 sin(50°)");
+  });
+
+  it("uses an exact known boundary displacement instead of rebuilding it", () => {
+    const time = 1 + Math.sqrt(2);
+    const state = { s: -2, u: 1, v: 1 - time, a: -1, t: time };
+    const enteredValues = {
+      sDisplay: exactExpression(-2, "-2"),
+      u: "1",
+      a: "-1",
+      tDisplay: exactExpression(time, "1 + √(2)"),
+    };
+
+    expect(calculateKinematicDisplayValues(state, enteredValues).s).toBe("-2");
+    const results = calculateSuvatEquationResults(state, enteredValues);
+    for (const id of ["s-u-t-a", "s-average-velocity", "s-v-t-a"] as const) {
+      expect(results.find((result) => result.id === id)?.finalValues[0]).toEqual({
+        value: "-2",
+        rounded: false,
+      });
+    }
   });
 });
 
@@ -229,6 +487,68 @@ describe("phase-aware SUVAT", () => {
       expect(equation.result).toBeCloseTo(equation.expected, 10);
     }
   });
+
+  it.each([
+    { speed: 10, speedText: "10", angle: 50, angleText: "50", gravity: 9.8, gravityText: "9.8" },
+    { speed: 10, speedText: "10", angle: 60, angleText: "60", gravity: 9.8, gravityText: "9.8" },
+    { speed: 12.3, speedText: "12.3", angle: 37, angleText: "37", gravity: 9.81, gravityText: "9.81" },
+  ])(
+    "shows exact zero displacement through the full $angle° Polar impact pipeline",
+    ({ speed, speedText, angle, angleText, gravity, gravityText }) => {
+      const particle = editParticleInitialVelocityAngle(
+        createParticle(`impact-${angle}`, { x: 0, y: 0 }),
+        speed,
+        angle,
+        { angleReferenceAxis: "positive-x", angleDirection: "anticlockwise" },
+        { speed: speedText, angle: angleText },
+      );
+      const localEnvironment = {
+        gravity,
+        groundEnabled: true,
+        groundHeight: 0,
+      };
+      const impactTime = calculateGroundImpactTime(
+        0,
+        particle.initialVelocity.y,
+        gravity,
+        0,
+      );
+      if (impactTime === null) throw new Error("Expected a ground impact.");
+      const timeDisplay = getGroundContactPauseTimeDisplay(
+        particle,
+        gravityText,
+        0,
+      );
+      if (!timeDisplay) throw new Error("Expected an exact impact time.");
+      const phase = determineActiveKinematicPhase(
+        particle,
+        impactTime,
+        localEnvironment,
+      );
+      const particleState = calculateParticleState(
+        particle,
+        impactTime,
+        localEnvironment,
+      );
+      const kinematics = calculateVerticalKinematicState(
+        phase,
+        particleState,
+        impactTime,
+        "up",
+      );
+      const uDisplay = createPolarVelocityComponentDisplay(
+        particle,
+        "y",
+        { positiveX: "right", positiveY: "up" },
+      );
+
+      expect(calculateKinematicDisplayValues(kinematics, {
+        uDisplay,
+        a: `-${gravityText}`,
+        tDisplay: createAutoPauseTimeDisplayValue(impactTime, timeDisplay),
+      }).s).toBe("0");
+    },
+  );
 
   it("restarts SUVAT from the grounded phase after impact", () => {
     const particle = createParticle("fallen", { x: 0, y: 10 });

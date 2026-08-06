@@ -47,7 +47,10 @@ export function determineActiveKinematicPhase(
   return {
     kind: "grounded",
     startTime: impactTime,
-    initialPosition: { x: particle.initialPosition.x, y: groundHeight },
+    initialPosition: {
+      x: particle.initialPosition.x + particle.initialVelocity.x * impactTime,
+      y: groundHeight,
+    },
     initialVelocity: { x: 0, y: 0 },
     acceleration: { x: 0, y: 0 },
   };

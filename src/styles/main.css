@@ -15,6 +15,7 @@
 }
 
 :root {
+  --pencil-grey: #cbc8c0;
   font-family:
     "KG Primary Penmanship Alt", ui-sans-serif, system-ui, sans-serif;
   color: #242725;
@@ -107,6 +108,25 @@ button:disabled {
 #scene-canvas.is-drop-target {
   outline: 5px solid #242725;
   outline-offset: -5px;
+}
+
+.exact-value-tooltip {
+  position: absolute;
+  z-index: 8;
+  padding: 6px 9px 5px;
+  border: 2px solid #242725;
+  border-radius: 8px;
+  background: #f8f7f1;
+  color: #242725;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.exact-value-tooltip[hidden] {
+  display: none;
 }
 
 .hotbar {
@@ -376,6 +396,7 @@ button:disabled {
 }
 
 .toggle-control {
+  position: relative;
   display: flex;
   justify-self: center;
   cursor: pointer;
@@ -383,8 +404,12 @@ button:disabled {
 
 .toggle-control input {
   position: absolute;
-  width: 1px;
-  height: 1px;
+  z-index: 1;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  cursor: pointer;
   opacity: 0;
 }
 
@@ -396,7 +421,7 @@ button:disabled {
   padding: 3px;
   border: 3px solid #242725;
   border-radius: 99px;
-  background: #d9d8d1;
+  background: var(--pencil-grey);
 }
 
 .toggle-track span {
@@ -645,7 +670,64 @@ button:disabled {
 }
 
 .initial-velocity-row {
-  min-height: 72px;
+  min-height: 178px;
+  grid-template-columns: minmax(0, 1fr) 190px;
+  align-items: start;
+}
+
+.initial-velocity-components {
+  display: grid;
+  width: 190px;
+  gap: 8px;
+}
+
+.initial-velocity-components .scalar-property-control {
+  height: 40px;
+  grid-template-columns: 24px 4px 72px 36px;
+}
+
+.initial-velocity-mode-fields {
+  display: grid;
+  gap: 8px;
+}
+
+.initial-velocity-mode-fields[hidden] {
+  display: none;
+}
+
+.velocity-input-mode {
+  display: grid;
+  height: 40px;
+  grid-template-columns: 1.4fr 0.9fr;
+  overflow: hidden;
+  border: 3px solid #242725;
+  border-radius: 9px;
+  background: var(--pencil-grey);
+}
+
+.velocity-input-mode button {
+  padding: 0 3px;
+  border: 0;
+  background: var(--pencil-grey);
+  color: #242725;
+  cursor: pointer;
+  font: inherit;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.velocity-input-mode button + button {
+  border-left: 3px solid #242725;
+}
+
+.velocity-input-mode button.is-active {
+  background: #78c98a;
+}
+
+.initial-velocity-components i sub {
+  font-size: 0.58em;
+  vertical-align: sub;
 }
 
 .particle-pause-settings {
@@ -662,7 +744,7 @@ button:disabled {
 
 .particle-pause-option {
   display: grid;
-  min-height: 48px;
+  height: 54px;
   grid-template-columns: minmax(0, 1fr) 44px;
   align-items: center;
   gap: 18px;
@@ -672,6 +754,27 @@ button:disabled {
 
 .particle-pause-option .toggle-control {
   justify-self: end;
+}
+
+.particle-pause-target-option {
+  grid-template-columns: minmax(0, 1fr) 94px 44px;
+  gap: 8px;
+}
+
+.particle-pause-target-control {
+  display: grid;
+  grid-template-columns: 72px 14px;
+  align-items: center;
+  gap: 4px;
+  font-size: 18px;
+}
+
+.particle-pause-target-control[hidden] {
+  display: none;
+}
+
+.particle-pause-target-option > .toggle-control {
+  grid-column: 3;
 }
 
 .particle-pause-option[hidden] {
@@ -685,7 +788,7 @@ button:disabled {
 }
 
 .property-number-field {
-  display: flex;
+  display: grid;
   width: 72px;
   height: 40px;
   align-items: center;
@@ -695,9 +798,11 @@ button:disabled {
   background: #fff;
 }
 
-.property-number-field input {
+.property-number-field input,
+.velocity-exact-value {
   width: 100%;
   height: 100%;
+  grid-area: 1 / 1;
   padding: 0 5px;
   border: 0;
   outline: 0;
@@ -707,6 +812,22 @@ button:disabled {
   font-variant-numeric: tabular-nums;
   font-weight: 700;
   text-align: center;
+}
+
+.velocity-exact-value {
+  display: grid;
+  place-items: center;
+  cursor: text;
+}
+
+.velocity-exact-value.is-hidden,
+.property-number-field input.is-hidden {
+  display: none;
+}
+
+.velocity-exact-value .suvat-math {
+  max-width: 100%;
+  font-size: 0.72em;
 }
 
 .property-number-field:focus-within {
@@ -719,7 +840,8 @@ button:disabled {
 }
 
 .particle-analysis-toggle,
-.suvat-section h3 {
+.suvat-section h3,
+.motion-graphs-section h3 {
   display: flex;
   width: 100%;
   min-height: 49px;
@@ -778,8 +900,83 @@ button:disabled {
   display: none;
 }
 
-.suvat-section h3 {
+.kinematic-component-selector {
+  display: grid;
+  height: 42px;
+  grid-template-columns: 1fr 1fr;
+  margin: 10px calc(13px + var(--particle-scrollbar-width)) 2px 13px;
+  overflow: hidden;
+  border: 3px solid #242725;
+  border-radius: 10px;
+  background: var(--pencil-grey);
+}
+
+.kinematic-component-selector button {
+  border: 0;
+  background: var(--pencil-grey);
+  color: #242725;
+  cursor: pointer;
+  font: inherit;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.kinematic-component-selector button + button {
+  border-left: 3px solid #242725;
+}
+
+.kinematic-component-selector button.is-active {
+  background: #78c98a;
+}
+
+.suvat-section h3,
+.motion-graphs-section h3 {
   border-top-width: 2px;
+}
+
+.motion-graphs-section {
+  padding-bottom: 12px;
+}
+
+.motion-graphs-section h3 {
+  margin-bottom: 10px;
+}
+
+.motion-graph {
+  margin: 0 calc(12px + var(--particle-scrollbar-width)) 12px 12px;
+}
+
+.motion-graph:last-child {
+  margin-bottom: 0;
+}
+
+.motion-graph figcaption {
+  margin: 0 0 5px 3px;
+  font-size: 19px;
+  font-weight: 700;
+}
+
+.motion-graph canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  box-sizing: border-box;
+  border: 2px solid #8c8d88;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.motion-graph canvas[role="button"] {
+  cursor: pointer;
+}
+
+.motion-graph canvas[role="button"]:hover {
+  border-color: #242725;
+}
+
+.motion-graph canvas[role="button"]:focus-visible {
+  outline: 3px solid #5e766e;
+  outline-offset: 2px;
 }
 
 .positive-direction-row {
@@ -804,6 +1001,34 @@ button:disabled {
   justify-self: end;
 }
 
+.angle-convention-row {
+  display: grid;
+  gap: 8px;
+  padding: 10px 13px 12px;
+  border-top: 2px solid #242725;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.angle-convention-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+}
+
+.angle-convention-fields select {
+  min-width: 0;
+  height: 39px;
+  padding: 0 5px;
+  border: 3px solid #242725;
+  border-radius: 9px;
+  background: #fff;
+  color: #242725;
+  font: inherit;
+  font-size: 17px;
+  font-weight: 700;
+}
+
 .direction-selector {
   display: grid;
   width: 148px;
@@ -812,14 +1037,14 @@ button:disabled {
   overflow: hidden;
   border: 3px solid #242725;
   border-radius: 9px;
-  background: #dedbd3;
+  background: var(--pencil-grey);
 }
 
 .direction-selector button {
   display: grid;
   place-items: center;
   border: 0;
-  background: transparent;
+  background: var(--pencil-grey);
   cursor: pointer;
 }
 
@@ -851,7 +1076,7 @@ button:disabled {
 .kinematic-values > div {
   display: grid;
   min-height: 56px;
-  grid-template-columns: 34px 182px;
+  grid-template-columns: 34px 224px;
   align-items: center;
   justify-content: center;
   column-gap: 18px;
@@ -859,6 +1084,10 @@ button:disabled {
 
 .kinematic-values > div + div {
   border-top: 1px solid #aaa79f;
+}
+
+.kinematic-values > div[hidden] {
+  display: none;
 }
 
 .kinematic-values dt,
@@ -875,7 +1104,7 @@ button:disabled {
 
 .kinematic-values dd {
   display: grid;
-  grid-template-columns: 84px 90px;
+  grid-template-columns: 126px 90px;
   align-items: center;
   gap: 8px;
   font-size: 17px;
@@ -906,16 +1135,12 @@ button:disabled {
   font-size: 0.9em;
 }
 
-.kinematic-values output.is-long-value .suvat-math {
+.kinematic-values output.has-fraction .suvat-math {
   font-size: 0.65em;
 }
 
 .kinematic-values output.has-square-root {
   align-content: center;
-}
-
-.kinematic-values output.has-square-root .suvat-math {
-  font-size: 0.68em;
 }
 
 .phase-interval-note {
@@ -940,6 +1165,11 @@ button:disabled {
 
 .phase-interval-note-line {
   display: block;
+}
+
+.phase-exact-time {
+  display: inline-flex;
+  cursor: help;
 }
 
 .phase-interval-note-line + .phase-interval-note-line {
@@ -1072,6 +1302,174 @@ button:disabled {
 
 .suvat-calculation-dialog::backdrop {
   background: rgb(36 39 37 / 28%);
+}
+
+.motion-graph-dialog {
+  width: min(1120px, calc(100vw - 64px));
+  height: min(650px, calc(100vh - 64px));
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  overflow: hidden;
+  border: 4px solid #242725;
+  border-radius: 20px;
+  background: #f8f7f1;
+  color: #242725;
+}
+
+.motion-graph-dialog::backdrop {
+  background: rgb(36 39 37 / 28%);
+}
+
+.motion-graph-dialog-shell {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+}
+
+.motion-graph-dialog-header {
+  display: flex;
+  min-height: 76px;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px 10px 24px;
+  border-bottom: 4px solid #242725;
+  background: #dedbd3;
+}
+
+.motion-graph-dialog-header h2 {
+  margin: 0;
+  font-size: 34px;
+  font-weight: 800;
+}
+
+.motion-graph-dialog-header button {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  flex: none;
+  place-items: center;
+  border: 3px solid #242725;
+  border-radius: 13px;
+  background: #f8f7f1;
+  color: #242725;
+  cursor: pointer;
+}
+
+.motion-graph-dialog-header button:hover {
+  background: #e89a8f;
+}
+
+.motion-graph-dialog-header button:focus-visible {
+  outline: 3px solid #5e766e;
+  outline-offset: 2px;
+}
+
+.motion-graph-dialog-header svg {
+  width: 31px;
+  height: 31px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 3;
+}
+
+.motion-graph-dialog-content {
+  display: grid;
+  min-height: 0;
+  flex: 1;
+  place-items: center;
+  padding: 24px;
+}
+
+.motion-graph-dialog-stage {
+  position: relative;
+  width: 100%;
+  max-height: 100%;
+  aspect-ratio: 1200 / 560;
+}
+
+.motion-graph-dialog-content canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border: 3px solid #8c8d88;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.motion-graph-dialog-annotations {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.motion-graph-coordinate {
+  position: absolute;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: rgb(255 255 255 / 94%);
+  color: #c83f3f;
+  font-size: clamp(17px, 2.25vw, 25px);
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: auto;
+}
+
+.motion-graph-coordinate .suvat-math {
+  color: inherit;
+  font-size: inherit;
+}
+
+.motion-graph-coordinate--above {
+  transform: translate(-50%, calc(-100% - 14px));
+}
+
+.motion-graph-coordinate--below {
+  transform: translate(-50%, 14px);
+}
+
+.motion-graph-coordinate--upper-left {
+  transform: translate(calc(-100% - 14px), calc(-100% - 14px));
+}
+
+.motion-graph-coordinate--upper-right {
+  transform: translate(14px, calc(-100% - 14px));
+}
+
+.motion-graph-coordinate--lower-left {
+  transform: translate(calc(-100% - 14px), 14px);
+}
+
+.motion-graph-coordinate--lower-right {
+  transform: translate(14px, 14px);
+}
+
+.motion-graph-coordinate--far-lower-left {
+  transform: translate(calc(-100% - 14px), 58px);
+}
+
+.motion-graph-coordinate--far-lower-right {
+  transform: translate(14px, 58px);
+}
+
+.motion-graph-coordinate--left {
+  transform: translate(calc(-100% - 14px), -50%);
+}
+
+.motion-graph-coordinate--right {
+  transform: translate(14px, -50%);
+}
+
+.motion-graph-exact-tooltip {
+  z-index: 4;
 }
 
 .suvat-calculation-dialog-shell {
@@ -1384,7 +1782,7 @@ button:disabled {
 
 .time-display {
   display: flex;
-  min-width: 148px;
+  min-width: 186px;
   height: 56px;
   align-items: center;
   justify-content: center;
@@ -1403,7 +1801,7 @@ button:disabled {
 
 .time-number-field {
   display: grid;
-  width: 76px;
+  width: 114px;
   height: 56px;
   overflow: hidden;
   border: 3px solid #242725;

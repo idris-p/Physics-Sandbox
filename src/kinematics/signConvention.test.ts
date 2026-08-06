@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  scalarToWorldHorizontal,
   scalarToWorldVertical,
+  worldHorizontalToScalar,
   worldVerticalToScalar,
 } from "./signConvention";
 
@@ -21,5 +23,17 @@ describe("vertical sign convention", () => {
         scalarToWorldVertical(worldVerticalToScalar(-3.125, direction), direction),
       ).toBe(-3.125);
     }
+  });
+});
+
+describe("horizontal sign convention", () => {
+  it("keeps world values when rightward is positive", () => {
+    expect(worldHorizontalToScalar(-4, "right")).toBe(-4);
+    expect(scalarToWorldHorizontal(-4, "right")).toBe(-4);
+  });
+
+  it("negates values when leftward is positive", () => {
+    expect(worldHorizontalToScalar(4, "left")).toBe(-4);
+    expect(scalarToWorldHorizontal(-4, "left")).toBe(4);
   });
 });

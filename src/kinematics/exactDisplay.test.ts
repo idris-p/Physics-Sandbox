@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
   addRationals,
+  convertEnteredScalarText,
   derivedValue,
   divideRationals,
   enteredDecimal,
+  exactSurdValue,
+  exactTrigValue,
   formatFinalValue,
   formatSquareRootValue,
   formatWorkingValue,
   multiplyRationals,
+  multiplyDisplayValues,
+  addDisplayValues,
   negateEnteredDecimal,
   rationalFromDecimal,
 } from "./exactDisplay";
@@ -30,6 +35,97 @@ describe("exact SUVAT display values", () => {
   it("uses simple fractions for generated repeating values", () => {
     expect(formatWorkingValue(derivedValue(1 / 3))).toBe("1/3");
     expect(formatWorkingValue(derivedValue(2 / 3))).toBe("2/3");
+  });
+
+  it("simplifies products and sums of compatible rational surds exactly", () => {
+    const fiveRootThree = exactSurdValue(
+      5 * Math.sqrt(3),
+      { numerator: 5n, denominator: 1n },
+      3n,
+    );
+    const twentyFiveRootThreeOverFortyNine = exactSurdValue(
+      25 * Math.sqrt(3) / 49,
+      { numerator: 25n, denominator: 49n },
+      3n,
+    );
+
+    expect(formatWorkingValue(fiveRootThree)).toBe("5√(3)");
+    expect(
+      formatWorkingValue(
+        multiplyDisplayValues(
+          375 / 49,
+          fiveRootThree,
+          twentyFiveRootThreeOverFortyNine,
+        ),
+      ),
+    ).toBe("375/49");
+    expect(
+      formatWorkingValue(
+        addDisplayValues(
+          0,
+          fiveRootThree,
+          exactSurdValue(
+            -5 * Math.sqrt(3),
+            { numerator: -5n, denominator: 1n },
+            3n,
+          ),
+        ),
+      ),
+    ).toBe("0");
+  });
+
+  it("combines powers and cancels like exact trigonometric terms", () => {
+    const sine = Math.sin(53 * Math.PI / 180);
+    const tenSine = exactTrigValue(
+      10 * sine,
+      { numerator: 10n, denominator: 1n },
+      "sin",
+      "53",
+    );
+    const fiftySineOverFortyNine = exactTrigValue(
+      50 / 49 * sine,
+      { numerator: 50n, denominator: 49n },
+      "sin",
+      "53",
+    );
+
+    expect(
+      formatWorkingValue(
+        multiplyDisplayValues(
+          500 / 49 * sine ** 2,
+          tenSine,
+          fiftySineOverFortyNine,
+        ),
+      ),
+    ).toBe("500/49 sin²(53°)");
+    expect(
+      formatWorkingValue(
+        addDisplayValues(
+          0,
+          tenSine,
+          exactTrigValue(
+            -10 * sine,
+            { numerator: -10n, denominator: 1n },
+            "sin",
+            "53",
+          ),
+        ),
+      ),
+    ).toBe("0");
+    expect(
+      formatWorkingValue(
+        multiplyDisplayValues(
+          500 / 49 * sine * Math.cos(53 * Math.PI / 180),
+          exactTrigValue(
+            10 * Math.cos(53 * Math.PI / 180),
+            { numerator: 10n, denominator: 1n },
+            "cos",
+            "53",
+          ),
+          fiftySineOverFortyNine,
+        ),
+      ),
+    ).toBe("500/49 cos(53°) sin(53°)");
   });
 
   it("keeps a fraction when its reduced denominator is not a power of ten", () => {
@@ -132,5 +228,11 @@ describe("exact SUVAT display values", () => {
   it("changes a preserved entered decimal's sign without changing its form", () => {
     expect(negateEnteredDecimal("2.50")).toBe("-2.50");
     expect(negateEnteredDecimal("-0.333")).toBe("0.333");
+  });
+
+  it("converts entered scalar text between educational directions", () => {
+    expect(convertEnteredScalarText("2.50", "right", "right")).toBe("2.50");
+    expect(convertEnteredScalarText("2.50", "right", "left")).toBe("-2.50");
+    expect(convertEnteredScalarText("-0.333", "up", "down")).toBe("0.333");
   });
 });

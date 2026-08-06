@@ -13,6 +13,7 @@
     <main class="app-shell">
       <section class="workspace" aria-label="Mechanics diagram">
         <canvas id="scene-canvas" aria-label="Metre grid for placing and selecting particles"></canvas>
+        <div id="canvas-exact-tooltip" class="exact-value-tooltip" role="tooltip" hidden></div>
 
         <div class="hotbar" role="toolbar" aria-label="Items">
           <button
@@ -83,7 +84,22 @@
           </div>
           <span id="gravity-error" class="field-error" role="alert"></span>
           <div class="positive-direction-row scene-positive-direction-row">
-            <span>Positive direction</span>
+            <span>Positive x</span>
+            <div class="direction-selector" role="group" aria-label="Positive horizontal direction">
+              <button id="positive-left" type="button" aria-label="Positive x direction left" aria-pressed="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M19 12H5m5.5-5.5L5 12l5.5 5.5" />
+                </svg>
+              </button>
+              <button id="positive-right" type="button" aria-label="Positive x direction right" aria-pressed="true">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M5 12h14m-5.5-5.5L19 12l-5.5 5.5" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="positive-direction-row scene-positive-direction-row">
+            <span>Positive y</span>
             <div class="direction-selector" role="group" aria-label="Positive vertical direction">
               <button id="positive-up" type="button" aria-label="Positive direction up" aria-pressed="true">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -95,6 +111,21 @@
                   <path d="M12 5v14m5.5-5.5L12 19l-5.5-5.5" />
                 </svg>
               </button>
+            </div>
+          </div>
+          <div class="angle-convention-row">
+            <span>Measure angles from:</span>
+            <div class="angle-convention-fields">
+              <select id="angle-reference-axis" aria-label="Angle reference axis">
+                <option value="positive-x" selected>positive x</option>
+                <option value="negative-x">negative x</option>
+                <option value="positive-y">positive y</option>
+                <option value="negative-y">negative y</option>
+              </select>
+              <select id="angle-direction" aria-label="Angle measurement direction">
+                <option value="anticlockwise" selected>anti-clockwise</option>
+                <option value="clockwise">clockwise</option>
+              </select>
             </div>
           </div>
           <div class="scene-actions">
@@ -136,31 +167,58 @@
           </div>
           <div class="scalar-property-row initial-velocity-row">
             <span class="scalar-property-name">Initial velocity</span>
-            <label class="scalar-property-control" for="particle-initial-velocity-input">
+            <div class="initial-velocity-components">
+            <div class="velocity-input-mode" role="group" aria-label="Initial velocity coordinate form">
+              <button id="velocity-mode-components" class="is-active" type="button" aria-pressed="true">Cartesian</button>
+              <button id="velocity-mode-angle" type="button" aria-pressed="false">Polar</button>
+            </div>
+            <div id="initial-velocity-angle-fields" class="initial-velocity-mode-fields" hidden>
+            <label class="scalar-property-control" for="particle-initial-speed-input">
               <i>u</i><span>=</span>
               <span class="property-number-field">
+                <input id="particle-initial-speed-input" type="text" inputmode="decimal" value="0" />
+                <button id="particle-initial-speed-exact" class="velocity-exact-value is-hidden" type="button" aria-label="Edit exact initial speed"></button>
+              </span>
+              <span class="compact-unit">m s<sup>−1</sup></span>
+            </label>
+            <label class="scalar-property-control" for="particle-initial-angle-input">
+              <i class="physics-symbol">θ</i><span>=</span>
+              <span class="property-number-field">
+                <input id="particle-initial-angle-input" type="text" inputmode="decimal" value="0" />
+                <button id="particle-initial-angle-exact" class="velocity-exact-value is-hidden" type="button" aria-label="Edit exact initial angle"></button>
+              </span>
+              <span class="compact-unit">°</span>
+            </label>
+            </div>
+            <div id="initial-velocity-component-fields" class="initial-velocity-mode-fields">
+            <label class="scalar-property-control" for="particle-initial-velocity-x-input">
+              <i>u<sub>x</sub></i><span>=</span>
+              <span class="property-number-field">
+                <input id="particle-initial-velocity-x-input" type="text" inputmode="decimal" value="0" />
+                <button id="particle-initial-velocity-x-exact" class="velocity-exact-value is-hidden" type="button" aria-label="Edit exact horizontal initial velocity"></button>
+              </span>
+              <span class="compact-unit">m s<sup>−1</sup></span>
+            </label>
+            <label class="scalar-property-control" for="particle-initial-velocity-y-input">
+              <i>u<sub>y</sub></i><span>=</span>
+              <span class="property-number-field">
                 <input
-                  id="particle-initial-velocity-input"
+                  id="particle-initial-velocity-y-input"
                   type="text"
                   inputmode="decimal"
                   value="0"
                   aria-describedby="initial-velocity-unit"
                 />
+                <button id="particle-initial-velocity-y-exact" class="velocity-exact-value is-hidden" type="button" aria-label="Edit exact vertical initial velocity"></button>
               </span>
               <span id="initial-velocity-unit" class="compact-unit">m s<sup>−1</sup></span>
             </label>
+            </div>
+            </div>
           </div>
 
           <div class="particle-pause-settings">
             <div class="particle-pause-heading">Pause scene at:</div>
-            <div class="particle-pause-option">
-              <span>Greatest height</span>
-              <label class="toggle-control" for="particle-pause-at-greatest-toggle">
-                <input id="particle-pause-at-greatest-toggle" type="checkbox" />
-                <span class="toggle-track" aria-hidden="true"><span></span></span>
-                <span class="visually-hidden">Pause scene at this particle's greatest height</span>
-              </label>
-            </div>
             <div id="particle-pause-at-ground-row" class="particle-pause-option">
               <span>Ground contact</span>
               <label class="toggle-control" for="particle-pause-at-ground-toggle">
@@ -169,7 +227,37 @@
                 <span class="visually-hidden">Pause scene when this particle contacts the ground</span>
               </label>
             </div>
-          </div>
+            <div class="particle-pause-option">
+              <span>Greatest height</span>
+              <label class="toggle-control" for="particle-pause-at-greatest-toggle">
+                <input id="particle-pause-at-greatest-toggle" type="checkbox" />
+                <span class="toggle-track" aria-hidden="true"><span></span></span>
+                <span class="visually-hidden">Pause scene at this particle's greatest height</span>
+              </label>
+            </div>
+            <div class="particle-pause-option particle-pause-target-option">
+              <span id="particle-pause-target-label">Height above ground</span>
+              <label id="particle-pause-target-control" class="particle-pause-target-control" for="particle-pause-target-input" hidden>
+                <span class="property-number-field">
+                  <input id="particle-pause-target-input" type="text" inputmode="decimal" value="1" />
+                </span>
+                <span>m</span>
+              </label>
+              <label class="toggle-control" for="particle-pause-target-toggle">
+                <input id="particle-pause-target-toggle" type="checkbox" />
+                <span class="toggle-track" aria-hidden="true"><span></span></span>
+                <span class="visually-hidden">Pause scene at the requested vertical position</span>
+                </label>
+              </div>
+            <div class="particle-pause-option">
+              <span>Particle coincidence</span>
+              <label class="toggle-control" for="particle-pause-at-coincidence-toggle">
+                <input id="particle-pause-at-coincidence-toggle" type="checkbox" />
+                <span class="toggle-track" aria-hidden="true"><span></span></span>
+                <span class="visually-hidden">Pause scene when this particle coincides with another particle</span>
+              </label>
+            </div>
+            </div>
 
           <section class="kinematics-section" aria-labelledby="kinematics-title">
             <button
@@ -185,14 +273,44 @@
               </svg>
             </button>
             <div id="particle-analysis-content" class="particle-analysis-content" hidden>
+              <div class="kinematic-component-selector" role="group" aria-label="Kinematics component">
+                <button id="kinematic-vertical" class="is-active" type="button" aria-pressed="true">Vertical</button>
+                <button id="kinematic-horizontal" type="button" aria-pressed="false">Horizontal</button>
+              </div>
               <p id="kinematic-phase-note" class="phase-interval-note is-hidden"></p>
               <dl class="kinematic-values">
-                <div><dt><i>s</i></dt><dd><output id="kinematic-s">0</output><span>m</span></dd></div>
-                <div><dt><i>u</i></dt><dd><output id="kinematic-u">0</output><span>m s<sup>−1</sup></span></dd></div>
-                <div><dt><i>v</i></dt><dd><output id="kinematic-v">0</output><span>m s<sup>−1</sup></span></dd></div>
-                <div><dt><i>a</i></dt><dd><output id="kinematic-a">0</output><span>m s<sup>−2</sup></span></dd></div>
-                <div><dt><i>t</i></dt><dd><output id="kinematic-t">0</output><span>s</span></dd></div>
+                <div data-kinematic-quantity="s"><dt><i>s</i></dt><dd><output id="kinematic-s">0</output><span>m</span></dd></div>
+                <div data-kinematic-quantity="u"><dt><i>u</i></dt><dd><output id="kinematic-u">0</output><span>m s<sup>−1</sup></span></dd></div>
+                <div data-kinematic-quantity="v"><dt><i>v</i></dt><dd><output id="kinematic-v">0</output><span>m s<sup>−1</sup></span></dd></div>
+                <div data-kinematic-quantity="a"><dt><i>a</i></dt><dd><output id="kinematic-a">0</output><span>m s<sup>−2</sup></span></dd></div>
+                <div data-kinematic-quantity="t"><dt><i>t</i></dt><dd><output id="kinematic-t">0</output><span>s</span></dd></div>
               </dl>
+
+              <section class="motion-graphs-section" aria-labelledby="motion-graphs-title">
+                <h3 id="motion-graphs-title">Motion Graphs</h3>
+                <figure class="motion-graph">
+                  <figcaption>Displacement–time</figcaption>
+                  <canvas
+                    id="displacement-time-graph"
+                    width="620"
+                    height="250"
+                    role="button"
+                    tabindex="0"
+                    aria-label="Displacement against time graph"
+                  ></canvas>
+                </figure>
+                <figure class="motion-graph">
+                  <figcaption>Velocity–time</figcaption>
+                  <canvas
+                    id="velocity-time-graph"
+                    width="620"
+                    height="250"
+                    role="button"
+                    tabindex="0"
+                    aria-label="Velocity against time graph"
+                  ></canvas>
+                </figure>
+              </section>
 
               <section class="suvat-section" aria-labelledby="suvat-title">
                 <h3 id="suvat-title">SUVAT</h3>
@@ -252,6 +370,48 @@
                 <span class="suvat-result"></span>
                 <span class="suvat-square-root is-hidden"></span>
               </article>
+            </div>
+          </div>
+        </dialog>
+
+        <dialog
+          id="motion-graph-dialog"
+          class="motion-graph-dialog"
+          aria-labelledby="motion-graph-dialog-title"
+        >
+          <div class="motion-graph-dialog-shell">
+            <header class="motion-graph-dialog-header">
+              <h2 id="motion-graph-dialog-title">Motion Graph</h2>
+              <button
+                id="close-motion-graph-dialog"
+                type="button"
+                aria-label="Close enlarged motion graph"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M6 6l12 12M18 6 6 18" />
+                </svg>
+              </button>
+            </header>
+            <div class="motion-graph-dialog-content">
+              <div class="motion-graph-dialog-stage">
+                <canvas
+                  id="enlarged-motion-graph"
+                  width="1240"
+                  height="500"
+                  aria-label="Enlarged motion graph"
+                ></canvas>
+                <div
+                  id="enlarged-motion-graph-annotations"
+                  class="motion-graph-dialog-annotations"
+                  aria-label="Exact graph coordinates"
+                ></div>
+                <div
+                  id="motion-graph-exact-tooltip"
+                  class="exact-value-tooltip motion-graph-exact-tooltip"
+                  role="tooltip"
+                  hidden
+                ></div>
+              </div>
             </div>
           </div>
         </dialog>

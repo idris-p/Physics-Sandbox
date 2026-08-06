@@ -1,10 +1,18 @@
 import {
+  addDisplayValues,
+  convertEnteredScalarText,
   derivedValue,
-  formatSquareRootValue,
+  divideRationals,
+  enteredDecimal,
   formatWorkingValue,
+  multiplyDisplayValues,
+  rationalFromDecimal,
+  subtractRationals,
+  type DisplayValue,
   type SquareRootValueDisplay,
 } from "../kinematics/exactDisplay";
-import type { ParticleState } from "../model/Particle";
+import { createPolarVelocityComponentDisplay } from "../kinematics/polarVelocityExact";
+import type { Particle, ParticleState } from "../model/Particle";
 import {
   sameTime,
   type GreatestHeightPauseEvent,
@@ -16,6 +24,7 @@ export interface GreatestHeightMeasurement {
   groundHeight: number;
   height: number;
   valueDisplay: string | SquareRootValueDisplay;
+  labelPrefix: string;
 }
 
 export interface GreatestHeightHorizontalGeometry {
@@ -56,28 +65,139 @@ export function getGreatestHeightMeasurements(
   currentTime: number,
   groundEnabled: boolean,
   groundHeight: number,
+  particles: Particle[],
   particleStates: ParticleState[],
+  gravityText = "9.8",
 ): GreatestHeightMeasurement[] {
-  if (!event || !groundEnabled || !sameTime(currentTime, event.time)) return [];
+  if (!event || !sameTime(currentTime, event.time)) return [];
 
+  const particlesById = new Map(
+    particles.map((particle) => [particle.id, particle]),
+  );
   const triggeringIds = new Set(event.particleIds);
-  return particleStates.flatMap((particle) => {
-    if (!triggeringIds.has(particle.id)) return [];
+  return particleStates.flatMap((particleState) => {
+    if (!triggeringIds.has(particleState.id)) return [];
+    const particle = particlesById.get(particleState.id);
+    if (!particle) return [];
+
+    const referenceHeight = groundEnabled
+      ? groundHeight
+      : particle.initialPosition.y;
 
     const height = calculateGreatestHeightAboveGround(
-      particle.position.y,
-      groundHeight,
+      particleState.position.y,
+      referenceHeight,
     );
-    const displayValue = derivedValue(height);
+    const displayValue = calculateGreatestHeightDisplayValue(
+      particle,
+      groundEnabled,
+      groundHeight,
+      gravityText,
+      height,
+    );
     return [
       {
-        particleId: particle.id,
-        position: { ...particle.position },
-        groundHeight,
+        particleId: particleState.id,
+        position: { ...particleState.position },
+        groundHeight: referenceHeight,
         height,
-        valueDisplay:
-          formatSquareRootValue(displayValue) ?? formatWorkingValue(displayValue),
+        valueDisplay: formatExactAnnotationValue(displayValue),
+        labelPrefix: "Greatest height = ",
       },
     ];
   });
+}
+
+function calculateGreatestHeightDisplayValue(
+  particle: Particle,
+  groundEnabled: boolean,
+  groundHeight: number,
+  gravityText: string,
+  measuredHeight: number,
+): DisplayValue {
+  const gravity = rationalFromDecimal(gravityText);
+  if (!gravity || gravity.numerator <= 0n) {
+    return exactNumericFallback(measuredHeight);
+  }
+
+  const gravityValue = Number(gravity.numerator) / Number(gravity.denominator);
+  const initialVelocity = getInitialVerticalVelocityDisplay(particle);
+  const inverseDoubleGravity = divideRationals(
+    { numerator: 1n, denominator: 1n },
+    {
+      numerator: 2n * gravity.numerator,
+      denominator: gravity.denominator,
+    },
+  );
+  const riseValue = particle.initialVelocity.y ** 2 / (2 * gravityValue);
+  const rise = multiplyDisplayValues(
+    riseValue,
+    initialVelocity,
+    initialVelocity,
+    derivedValue(1 / (2 * gravityValue), inverseDoubleGravity),
+  );
+  const initialOffset = getInitialHeightOffset(
+    particle,
+    groundEnabled,
+    groundHeight,
+  );
+  const exactHeight = addDisplayValues(
+    initialOffset.value + riseValue,
+    initialOffset,
+    rise,
+  );
+
+  return approximatelyEqual(exactHeight.value, measuredHeight)
+    ? exactHeight
+    : exactNumericFallback(measuredHeight);
+}
+
+function getInitialVerticalVelocityDisplay(particle: Particle): DisplayValue {
+  const polar = createPolarVelocityComponentDisplay(
+    particle,
+    "y",
+    { positiveX: "right", positiveY: "up" },
+  );
+  if (polar) return polar;
+
+  const entered = particle.initialVelocityInput.y;
+  const text = convertEnteredScalarText(
+    entered.text,
+    entered.positiveDirection,
+    "up",
+  );
+  return enteredDecimal(text, particle.initialVelocity.y);
+}
+
+function getInitialHeightOffset(
+  particle: Particle,
+  groundEnabled: boolean,
+  groundHeight: number,
+): DisplayValue {
+  if (!groundEnabled) {
+    return derivedValue(0, { numerator: 0n, denominator: 1n });
+  }
+
+  const initialHeight = rationalFromDecimal(String(particle.initialPosition.y));
+  const ground = rationalFromDecimal(String(groundHeight));
+  const value = particle.initialPosition.y - groundHeight;
+  return initialHeight && ground
+    ? derivedValue(value, subtractRationals(initialHeight, ground))
+    : exactNumericFallback(value);
+}
+
+function exactNumericFallback(value: number): DisplayValue {
+  const inferred = derivedValue(value);
+  return formatWorkingValue(inferred).startsWith("≈")
+    ? enteredDecimal(String(value), value)
+    : inferred;
+}
+
+function formatExactAnnotationValue(value: DisplayValue): string {
+  const formatted = formatWorkingValue(value);
+  return formatted.startsWith("≈") ? String(value.value) : formatted;
+}
+
+function approximatelyEqual(left: number, right: number): boolean {
+  return Math.abs(left - right) <= 1e-9 * Math.max(1, Math.abs(left), Math.abs(right));
 }
