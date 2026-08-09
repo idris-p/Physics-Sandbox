@@ -83,6 +83,15 @@
             </label>
           </div>
           <span id="gravity-error" class="field-error" role="alert"></span>
+          <div class="property-row force-arrows-property-row">
+            <span>Show force arrows</span>
+            <span class="property-spacer" aria-hidden="true"></span>
+            <label class="toggle-control" for="show-force-arrows-toggle">
+              <input id="show-force-arrows-toggle" type="checkbox" checked />
+              <span class="toggle-track" aria-hidden="true"><span></span></span>
+              <span class="visually-hidden">Show force arrows</span>
+            </label>
+          </div>
           <div class="positive-direction-row scene-positive-direction-row">
             <span>Positive x</span>
             <div class="direction-selector" role="group" aria-label="Positive horizontal direction">
@@ -142,8 +151,43 @@
           aria-labelledby="particle-properties-title"
         >
           <h2 id="particle-properties-title">Particle Properties</h2>
+          <div class="particle-properties-tabs" role="tablist" aria-label="Particle properties sections">
+            <button
+              id="particle-tab-general"
+              class="particle-properties-tab is-active"
+              type="button"
+              role="tab"
+              aria-selected="true"
+              aria-controls="particle-general-content"
+              tabindex="0"
+            >General</button>
+            <button
+              id="particle-tab-forces"
+              class="particle-properties-tab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="particle-forces-content"
+              tabindex="-1"
+            >Forces</button>
+            <button
+              id="particle-tab-kinematics"
+              class="particle-properties-tab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="particle-analysis-content"
+              tabindex="-1"
+            >Kinematics</button>
+          </div>
           <div class="particle-properties-scroll">
           <div class="particle-properties-content">
+          <section
+            id="particle-general-content"
+            class="particle-tab-panel"
+            role="tabpanel"
+            aria-labelledby="particle-tab-general"
+          >
           <div class="particle-property-row">
             <span class="particle-property-name">Position</span>
             <div class="position-values">
@@ -155,68 +199,6 @@
               </div>
             </div>
           </div>
-          <div class="scalar-property-row">
-            <span class="scalar-property-name">Mass</span>
-            <label class="scalar-property-control" for="particle-mass-input">
-              <i>m</i><span>=</span>
-              <span class="property-number-field">
-                <input id="particle-mass-input" type="text" inputmode="decimal" value="1" />
-              </span>
-              <span>kg</span>
-            </label>
-          </div>
-          <div class="scalar-property-row initial-velocity-row">
-            <span class="scalar-property-name">Initial velocity</span>
-            <div class="initial-velocity-components">
-            <div class="velocity-input-mode" role="group" aria-label="Initial velocity coordinate form">
-              <button id="velocity-mode-components" class="is-active" type="button" aria-pressed="true">Cartesian</button>
-              <button id="velocity-mode-angle" type="button" aria-pressed="false">Polar</button>
-            </div>
-            <div id="initial-velocity-angle-fields" class="initial-velocity-mode-fields" hidden>
-            <label class="scalar-property-control" for="particle-initial-speed-input">
-              <i>u</i><span>=</span>
-              <span class="property-number-field">
-                <input id="particle-initial-speed-input" type="text" inputmode="decimal" value="0" />
-                <button id="particle-initial-speed-exact" class="velocity-exact-value is-hidden" type="button" aria-label="Edit exact initial speed"></button>
-              </span>
-              <span class="compact-unit">m s<sup>−1</sup></span>
-            </label>
-            <label class="scalar-property-control" for="particle-initial-angle-input">
-              <i class="physics-symbol">θ</i><span>=</span>
-              <span class="property-number-field">
-                <input id="particle-initial-angle-input" type="text" inputmode="decimal" value="0" />
-                <button id="particle-initial-angle-exact" class="velocity-exact-value is-hidden" type="button" aria-label="Edit exact initial angle"></button>
-              </span>
-              <span class="compact-unit">°</span>
-            </label>
-            </div>
-            <div id="initial-velocity-component-fields" class="initial-velocity-mode-fields">
-            <label class="scalar-property-control" for="particle-initial-velocity-x-input">
-              <i>u<sub>x</sub></i><span>=</span>
-              <span class="property-number-field">
-                <input id="particle-initial-velocity-x-input" type="text" inputmode="decimal" value="0" />
-                <button id="particle-initial-velocity-x-exact" class="velocity-exact-value is-hidden" type="button" aria-label="Edit exact horizontal initial velocity"></button>
-              </span>
-              <span class="compact-unit">m s<sup>−1</sup></span>
-            </label>
-            <label class="scalar-property-control" for="particle-initial-velocity-y-input">
-              <i>u<sub>y</sub></i><span>=</span>
-              <span class="property-number-field">
-                <input
-                  id="particle-initial-velocity-y-input"
-                  type="text"
-                  inputmode="decimal"
-                  value="0"
-                  aria-describedby="initial-velocity-unit"
-                />
-                <button id="particle-initial-velocity-y-exact" class="velocity-exact-value is-hidden" type="button" aria-label="Edit exact vertical initial velocity"></button>
-              </span>
-              <span id="initial-velocity-unit" class="compact-unit">m s<sup>−1</sup></span>
-            </label>
-            </div>
-            </div>
-          </div>
-
           <div class="particle-pause-settings">
             <div class="particle-pause-heading">Pause scene at:</div>
             <div id="particle-pause-at-ground-row" class="particle-pause-option">
@@ -247,8 +229,8 @@
                 <input id="particle-pause-target-toggle" type="checkbox" />
                 <span class="toggle-track" aria-hidden="true"><span></span></span>
                 <span class="visually-hidden">Pause scene at the requested vertical position</span>
-                </label>
-              </div>
+              </label>
+            </div>
             <div class="particle-pause-option">
               <span>Particle coincidence</span>
               <label class="toggle-control" for="particle-pause-at-coincidence-toggle">
@@ -257,22 +239,149 @@
                 <span class="visually-hidden">Pause scene when this particle coincides with another particle</span>
               </label>
             </div>
+          </div>
+          </section>
+          <section
+            id="particle-forces-content"
+            class="particle-forces-content particle-tab-panel"
+            role="tabpanel"
+            aria-labelledby="particle-tab-forces"
+            hidden
+          >
+            <div class="scalar-property-row force-mass-row">
+              <span class="scalar-property-name">Mass</span>
+              <label class="scalar-property-control" for="particle-mass-input">
+                <i>m</i><span>=</span>
+                <span class="property-number-field">
+                  <input id="particle-mass-input" type="text" inputmode="decimal" value="1" />
+                </span>
+                <span>kg</span>
+              </label>
             </div>
+            <section class="force-group" aria-label="Automatic forces">
+              <div class="weight-force-row">
+                <span>Weight</span>
+                <output id="particle-weight-value">W = mg = 1 × 9.8 = 9.8 N</output>
+              </div>
+              <div id="normal-reaction-row" class="weight-force-row" hidden>
+                <span>Normal reaction</span>
+                <output id="particle-normal-reaction-value">R = 9.8 N</output>
+              </div>
+            </section>
+            <section class="force-group" aria-labelledby="applied-forces-title">
+              <div class="applied-forces-toolbar">
+                <h4 id="applied-forces-title" class="force-group-heading">Applied forces</h4>
+                <div id="applied-force-global-mode" class="velocity-input-mode applied-force-global-mode" role="group" aria-label="Applied force coordinate form" hidden>
+                  <button id="applied-force-mode-components" class="is-active" type="button" aria-pressed="true">Cartesian</button>
+                  <button id="applied-force-mode-polar" type="button" aria-pressed="false">Polar</button>
+                </div>
+              </div>
+              <div id="applied-forces-list" class="applied-forces-list"></div>
+              <button id="add-applied-force" class="add-applied-force" type="button">+ Add force</button>
+              <div class="show-resultant-force-row">
+                <span>Show resultant force</span>
+                <label class="toggle-control" for="show-resultant-force-toggle">
+                  <input id="show-resultant-force-toggle" type="checkbox" />
+                  <span class="toggle-track" aria-hidden="true"><span></span></span>
+                  <span class="visually-hidden">Show the resultant instead of individual force arrows</span>
+                </label>
+              </div>
+            </section>
+            <div id="force-analysis" class="force-analysis">
+              <div
+                class="force-analysis-row"
+                data-force-calculation="resolve-x"
+                role="button"
+                tabindex="0"
+                aria-label="Open enlarged horizontal force resolution"
+              >
+                <strong>Resolve horizontally</strong>
+                <span id="force-resultant-x"></span>
+              </div>
+              <div
+                class="force-analysis-row"
+                data-force-calculation="resolve-y"
+                role="button"
+                tabindex="0"
+                aria-label="Open enlarged vertical force resolution"
+              >
+                <strong>Resolve vertically</strong>
+                <span id="force-resultant-y"></span>
+              </div>
+              <div
+                class="force-analysis-row force-law-row"
+                data-force-calculation="fma"
+                role="button"
+                tabindex="0"
+                aria-label="Open enlarged F equals ma calculation"
+              >
+                <strong>F = ma</strong>
+                <span id="force-acceleration-x"></span>
+                <span id="force-acceleration-y"></span>
+              </div>
+            </div>
+          </section>
 
-          <section class="kinematics-section" aria-labelledby="kinematics-title">
-            <button
-              id="toggle-particle-analysis"
-              class="particle-analysis-toggle"
-              type="button"
-              aria-expanded="false"
-              aria-controls="particle-analysis-content"
-            >
-              <span id="kinematics-title">Kinematics</span>
-              <svg class="analysis-chevron" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="m9 5 7 7-7 7" />
-              </svg>
-            </button>
-            <div id="particle-analysis-content" class="particle-analysis-content" hidden>
+          <section
+            id="particle-analysis-content"
+            class="particle-analysis-content particle-tab-panel"
+            role="tabpanel"
+            aria-labelledby="particle-tab-kinematics"
+            hidden
+          >
+              <div class="initial-velocity-row">
+                <div class="initial-velocity-toolbar">
+                  <span class="scalar-property-name">Initial velocity</span>
+                  <div class="velocity-input-mode" role="group" aria-label="Initial velocity coordinate form">
+                    <button id="velocity-mode-components" class="is-active" type="button" aria-pressed="true">Cartesian</button>
+                    <button id="velocity-mode-angle" type="button" aria-pressed="false">Polar</button>
+                  </div>
+                </div>
+                <div class="initial-velocity-components">
+                  <div id="initial-velocity-angle-fields" class="initial-velocity-mode-fields" hidden>
+                    <label class="scalar-property-control" for="particle-initial-speed-input">
+                      <i>u</i><span>=</span>
+                      <span class="property-number-field">
+                        <input id="particle-initial-speed-input" type="text" inputmode="decimal" value="0" />
+                        <button id="particle-initial-speed-exact" class="velocity-exact-value is-hidden" type="button" aria-label="Edit exact initial speed"></button>
+                      </span>
+                      <span class="compact-unit">m s<sup>−1</sup></span>
+                    </label>
+                    <label class="scalar-property-control" for="particle-initial-angle-input">
+                      <i class="physics-symbol">θ</i><span>=</span>
+                      <span class="property-number-field">
+                        <input id="particle-initial-angle-input" type="text" inputmode="decimal" value="0" />
+                        <button id="particle-initial-angle-exact" class="velocity-exact-value is-hidden" type="button" aria-label="Edit exact initial angle"></button>
+                      </span>
+                      <span class="compact-unit">°</span>
+                    </label>
+                  </div>
+                  <div id="initial-velocity-component-fields" class="initial-velocity-mode-fields">
+                    <label class="scalar-property-control" for="particle-initial-velocity-x-input">
+                      <i>u<sub>x</sub></i><span>=</span>
+                      <span class="property-number-field">
+                        <input id="particle-initial-velocity-x-input" type="text" inputmode="decimal" value="0" />
+                        <button id="particle-initial-velocity-x-exact" class="velocity-exact-value is-hidden" type="button" aria-label="Edit exact horizontal initial velocity"></button>
+                      </span>
+                      <span class="compact-unit">m s<sup>−1</sup></span>
+                    </label>
+                    <label class="scalar-property-control" for="particle-initial-velocity-y-input">
+                      <i>u<sub>y</sub></i><span>=</span>
+                      <span class="property-number-field">
+                        <input
+                          id="particle-initial-velocity-y-input"
+                          type="text"
+                          inputmode="decimal"
+                          value="0"
+                          aria-describedby="initial-velocity-unit"
+                        />
+                        <button id="particle-initial-velocity-y-exact" class="velocity-exact-value is-hidden" type="button" aria-label="Edit exact vertical initial velocity"></button>
+                      </span>
+                      <span id="initial-velocity-unit" class="compact-unit">m s<sup>−1</sup></span>
+                    </label>
+                  </div>
+                </div>
+              </div>
               <div class="kinematic-component-selector" role="group" aria-label="Kinematics component">
                 <button id="kinematic-vertical" class="is-active" type="button" aria-pressed="true">Vertical</button>
                 <button id="kinematic-horizontal" type="button" aria-pressed="false">Horizontal</button>
@@ -316,7 +425,6 @@
                 <h3 id="suvat-title">SUVAT</h3>
                 <div id="suvat-equations" class="suvat-equations"></div>
               </section>
-            </div>
           </section>
           </div>
           </div>
@@ -330,16 +438,16 @@
           <h2 id="ground-properties-title">Ground Properties</h2>
           <div class="ground-rough-row">
             <span>Rough</span>
-            <label class="toggle-control" for="ground-rough-toggle">
-              <input id="ground-rough-toggle" type="checkbox" />
-              <span class="toggle-track" aria-hidden="true"><span></span></span>
-              <span class="visually-hidden">Rough ground enabled</span>
-            </label>
             <label class="ground-friction-control is-hidden" for="ground-friction-input">
               <i class="physics-symbol">μ</i><span>=</span>
               <span class="property-number-field">
                 <input id="ground-friction-input" type="text" inputmode="decimal" value="0" />
               </span>
+            </label>
+            <label class="toggle-control" for="ground-rough-toggle">
+              <input id="ground-rough-toggle" type="checkbox" />
+              <span class="toggle-track" aria-hidden="true"><span></span></span>
+              <span class="visually-hidden">Rough ground enabled</span>
             </label>
           </div>
         </aside>
@@ -356,7 +464,7 @@
               <button
                 id="close-suvat-calculation-dialog"
                 type="button"
-                aria-label="Close enlarged SUVAT calculation"
+                aria-label="Close enlarged calculation"
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M6 6l12 12M18 6 6 18" />

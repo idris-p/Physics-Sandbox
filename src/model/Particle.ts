@@ -4,6 +4,7 @@ import type {
   VerticalPositiveDirection,
 } from "../kinematics/signConvention";
 import type { AngleConvention } from "../kinematics/angleConvention";
+import type { AppliedForce, AppliedForceInputMode } from "./AppliedForce";
 
 export type InitialVelocityInputMode = "angle" | "components";
 
@@ -25,6 +26,10 @@ export interface EnteredInitialVelocity {
 export interface Particle {
   id: string;
   mass: number;
+  massInput: string;
+  appliedForces: AppliedForce[];
+  appliedForceEditorMode: AppliedForceInputMode;
+  showResultantForce: boolean;
   pauseAtGreatestHeight: boolean;
   pauseAtGroundContact: boolean;
   pauseAtParticleCoincidence: boolean;
@@ -52,6 +57,10 @@ export function createParticle(id: string, position: Vec2): Particle {
   return {
     id,
     mass: 1,
+    massInput: "1",
+    appliedForces: [],
+    appliedForceEditorMode: "components",
+    showResultantForce: false,
     pauseAtGreatestHeight: false,
     pauseAtGroundContact: false,
     pauseAtParticleCoincidence: false,

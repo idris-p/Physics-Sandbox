@@ -1,5 +1,6 @@
 import type { Particle } from "../model/Particle";
-import { calculateGroundImpactTime } from "../physics/calculateParticleState";
+import { analyseNonContactForces } from "../dynamics/forceAnalysis";
+import { calculateGroundImpactTimeWithAcceleration } from "../physics/calculateParticleState";
 export {
   getNextParticleCoincidencePauseEvent,
   type ParticleCoincidencePauseEvent,
@@ -66,15 +67,21 @@ export function getNextGreatestHeightPauseEvent(
   currentTime: number,
   gravity: number,
 ): GreatestHeightPauseEvent | null {
-  if (gravity <= 0) return null;
-
   let nextEvent: GreatestHeightPauseEvent | null = null;
   for (const particle of particles) {
-    if (!particle.pauseAtGreatestHeight || particle.initialVelocity.y <= 0) {
+    const verticalAcceleration = analyseNonContactForces(
+      particle,
+      gravity,
+    ).acceleration.y;
+    if (
+      !particle.pauseAtGreatestHeight ||
+      particle.initialVelocity.y <= 0 ||
+      verticalAcceleration >= 0
+    ) {
       continue;
     }
 
-    const greatestHeightTime = particle.initialVelocity.y / gravity;
+    const greatestHeightTime = -particle.initialVelocity.y / verticalAcceleration;
     if (greatestHeightTime <= 0 || greatestHeightTime <= currentTime) continue;
     if (nextEvent === null) {
       nextEvent = { time: greatestHeightTime, particleIds: [particle.id] };
@@ -117,10 +124,14 @@ export function getNextGroundContactPauseEvent(
   for (const particle of particles) {
     if (!particle.pauseAtGroundContact) continue;
 
-    const impactTime = calculateGroundImpactTime(
+    const verticalAcceleration = analyseNonContactForces(
+      particle,
+      gravity,
+    ).acceleration.y;
+    const impactTime = calculateGroundImpactTimeWithAcceleration(
       particle.initialPosition.y,
       particle.initialVelocity.y,
-      gravity,
+      verticalAcceleration,
       groundHeight,
     );
     if (impactTime === null || impactTime <= 0 || impactTime <= currentTime) {
@@ -185,37 +196,57 @@ function getNextTimeAtHeight(
 ): number | null {
   const initialHeight = particle.initialPosition.y;
   const initialVelocity = particle.initialVelocity.y;
+  const verticalAcceleration = analyseNonContactForces(
+    particle,
+    gravity,
+  ).acceleration.y;
   const candidates: number[] = [];
 
-  if (gravity === 0) {
+  if (verticalAcceleration === 0) {
     if (initialVelocity !== 0) {
       candidates.push((targetHeight - initialHeight) / initialVelocity);
     }
   } else {
     const discriminant =
-      initialVelocity ** 2 - 2 * gravity * (targetHeight - initialHeight);
+      initialVelocity ** 2 +
+      2 * verticalAcceleration * (targetHeight - initialHeight);
     if (discriminant < 0) return null;
     const root = Math.sqrt(Math.max(0, discriminant));
     candidates.push(
-      (initialVelocity - root) / gravity,
-      (initialVelocity + root) / gravity,
+      (-initialVelocity - root) / verticalAcceleration,
+      (-initialVelocity + root) / verticalAcceleration,
     );
   }
 
   const impactTime = groundEnabled
-    ? calculateGroundImpactTime(
+    ? calculateGroundImpactTimeWithAcceleration(
         initialHeight,
         initialVelocity,
-        gravity,
+        verticalAcceleration,
         groundHeight,
       )
     : null;
+  let postImpactCandidate: number | null = null;
+
+  if (
+    impactTime !== null &&
+    verticalAcceleration > 0 &&
+    targetHeight >= groundHeight
+  ) {
+    const phaseDisplacement = targetHeight - groundHeight;
+    const phaseTime = Math.sqrt(2 * phaseDisplacement / verticalAcceleration);
+    postImpactCandidate = impactTime + phaseTime;
+    candidates.push(postImpactCandidate);
+  }
 
   return candidates
     .filter((time) => {
       if (!Number.isFinite(time) || time <= 0) return false;
       if (time < currentTime || sameTime(time, currentTime)) return false;
-      return impactTime === null || time < impactTime || sameTime(time, impactTime);
+      if (impactTime === null || time < impactTime || sameTime(time, impactTime)) {
+        return true;
+      }
+      return postImpactCandidate !== null && sameTime(time, postImpactCandidate);
     })
     .sort((left, right) => left - right)[0] ?? null;
 }

@@ -13,6 +13,7 @@ import {
   isNarrowInitialVelocityAngle,
   INITIAL_VELOCITY_ANGLE_ARC_RADIUS_METRES,
   INITIAL_VELOCITY_ARROW_LENGTH_METRES,
+  INITIAL_VELOCITY_COLOUR,
   type AngleInitialVelocityAnnotation,
   type ComponentInitialVelocityAnnotation,
   type SpeedInitialVelocityAnnotation,
@@ -27,6 +28,18 @@ import {
 } from "./selectionPulse";
 import { tokenizeMathText, type MathToken } from "../ui/mathMarkup";
 import { getExactValueTooltip } from "../ui/exactValueTooltip";
+import {
+  FORCE_ARROW_LENGTH_METRES,
+  FORCE_ARROW_LINE_DASH,
+  RESULTANT_FORCE_COLOUR,
+  calculateForceArrowOrigins,
+  calculateForceLabelPosition,
+  getForceAnnotations,
+  isZeroResultantForce,
+  type AngleForceAnnotation,
+  type ComponentForceAnnotation,
+} from "./forceAnnotation";
+import { analyseGroundContactForces } from "../dynamics/groundContact";
 
 export interface CanvasExactValueHoverTarget {
   left: number;
@@ -67,6 +80,16 @@ export function render(
 
   const particleGroups = groupParticlesByPosition(particleStates);
 
+  const exactValueHoverTargets = shouldRenderForceAnnotations(scene)
+    ? renderForceAnnotations(
+        context,
+        scene,
+        particleStates,
+        camera,
+        currentTime,
+      )
+    : [];
+
   if (currentTime === 0) {
     renderInitialVelocityAnnotations(
       context,
@@ -76,11 +99,11 @@ export function render(
     );
   }
 
-  const exactValueHoverTargets = renderHeightMeasurements(
+  exactValueHoverTargets.push(...renderHeightMeasurements(
     context,
     heightMeasurements,
     camera,
-  );
+  ));
 
   for (const coincidentParticles of particleGroups) {
     const particle = coincidentParticles[coincidentParticles.length - 1];
@@ -95,7 +118,267 @@ export function render(
     );
   }
 
+  if (shouldRenderForceAnnotations(scene)) {
+    renderZeroResultantMarkers(
+      context,
+      scene,
+      particleStates,
+      camera,
+      currentTime,
+    );
+  }
+
   return exactValueHoverTargets;
+}
+
+export function shouldRenderForceAnnotations(
+  scene: Pick<Scene, "showForceArrows">,
+): boolean {
+  return scene.showForceArrows;
+}
+
+function renderForceAnnotations(
+  context: CanvasRenderingContext2D,
+  scene: Scene,
+  particleStates: ParticleState[],
+  camera: Camera,
+  currentTime: number,
+): CanvasExactValueHoverTarget[] {
+  const hoverTargets: CanvasExactValueHoverTarget[] = [];
+  const particlesById = new Map(
+    scene.particles.map((particle) => [particle.id, particle]),
+  );
+  for (const state of particleStates) {
+    const particle = particlesById.get(state.id);
+    if (!particle) continue;
+    const normalReactionMagnitude = analyseGroundContactForces(
+      particle,
+      currentTime,
+      {
+        gravity: scene.settings.gravity,
+        groundEnabled: scene.groundEnabled,
+        groundHeight: scene.groundHeight,
+      },
+    ).contact.normalReactionMagnitude;
+    const annotations = getForceAnnotations(
+      particle,
+      scene.settings,
+      normalReactionMagnitude,
+    );
+    const point = worldToScreen(state.position, camera);
+    const { centre, radius } = getRenderedParticleGeometry(point, camera);
+    const screenDirections = annotations.map((annotation) => ({
+      x: annotation.direction.x,
+      y: -annotation.direction.y,
+    }));
+    const arrowOrigins = calculateForceArrowOrigins(
+      screenDirections,
+      centre,
+      radius,
+    );
+    annotations.forEach((annotation, annotationIndex) => {
+      const origin = arrowOrigins[annotationIndex];
+      const screenDirection = {
+        x: annotation.direction.x,
+        y: -annotation.direction.y,
+      };
+      const length = FORCE_ARROW_LENGTH_METRES * camera.pixelsPerMetre;
+      const tip = {
+        x: origin.x + screenDirection.x * length,
+        y: origin.y + screenDirection.y * length,
+      };
+      const headLength = Math.max(8, Math.min(16, camera.pixelsPerMetre * 0.3));
+      const headWidth = headLength * 0.65;
+      const perpendicular = { x: -screenDirection.y, y: screenDirection.x };
+      const base = {
+        x: tip.x - screenDirection.x * headLength,
+        y: tip.y - screenDirection.y * headLength,
+      };
+
+      context.save();
+      context.strokeStyle = annotation.colour ?? "#292d2c";
+      context.fillStyle = annotation.colour ?? "#292d2c";
+      context.lineWidth = 3;
+      context.lineCap = "round";
+      context.setLineDash([...FORCE_ARROW_LINE_DASH]);
+      context.beginPath();
+      context.moveTo(origin.x, origin.y);
+      context.lineTo(tip.x, tip.y);
+      context.moveTo(base.x + perpendicular.x * headWidth, base.y + perpendicular.y * headWidth);
+      context.lineTo(tip.x, tip.y);
+      context.lineTo(base.x - perpendicular.x * headWidth, base.y - perpendicular.y * headWidth);
+      context.stroke();
+
+      const fontSize = Math.max(14, Math.min(21, camera.pixelsPerMetre * 0.42));
+      context.font = `700 ${fontSize}px "KG Primary Penmanship Alt", sans-serif`;
+      context.textBaseline = "middle";
+      context.textAlign = "left";
+      if (annotation.kind === "components") {
+        renderComponentVelocityNotation(
+          context,
+          origin,
+          tip,
+          screenDirection,
+          annotation,
+          fontSize,
+          "N",
+          annotation.componentValues,
+          hoverTargets,
+          "after-tip",
+        );
+        context.restore();
+        return;
+      }
+      if (annotation.kind === "angle") {
+        renderAngleVelocityNotation(
+          context,
+          origin,
+          tip,
+          screenDirection,
+          camera,
+          annotation,
+          fontSize,
+          annotation.magnitudeText,
+          "N",
+          {
+            magnitude: annotation.magnitude,
+            angle: Math.abs(annotation.angleDegrees),
+            hoverTargets,
+          },
+          false,
+        );
+        renderForceMagnitudeAtArrowTip(
+          context,
+          annotation.magnitudeText,
+          annotation.magnitude,
+          tip,
+          screenDirection,
+          fontSize,
+          hoverTargets,
+        );
+        context.restore();
+        return;
+      }
+      renderForceMagnitudeAtArrowTip(
+        context,
+        annotation.magnitudeText,
+        annotation.magnitude,
+        tip,
+        screenDirection,
+        fontSize,
+        hoverTargets,
+      );
+      context.restore();
+    });
+  }
+  return hoverTargets;
+}
+
+export const ZERO_RESULTANT_MARKER_RADIUS_RATIO = 0.25;
+
+export function calculateZeroResultantMarkerRadius(
+  particleRadius: number,
+): number {
+  return Math.max(0, particleRadius) * ZERO_RESULTANT_MARKER_RADIUS_RATIO;
+}
+
+export function drawZeroResultantMarker(
+  context: CanvasRenderingContext2D,
+  centre: Vec2,
+  radius: number,
+): void {
+  context.save();
+  context.fillStyle = RESULTANT_FORCE_COLOUR;
+  context.beginPath();
+  context.arc(
+    centre.x,
+    centre.y,
+    radius,
+    0,
+    Math.PI * 2,
+  );
+  context.fill();
+  context.restore();
+}
+
+function renderZeroResultantMarkers(
+  context: CanvasRenderingContext2D,
+  scene: Scene,
+  particleStates: ParticleState[],
+  camera: Camera,
+  currentTime: number,
+): void {
+  const particlesById = new Map(
+    scene.particles.map((particle) => [particle.id, particle]),
+  );
+  for (const state of particleStates) {
+    const particle = particlesById.get(state.id);
+    if (!particle?.showResultantForce) continue;
+    const normalReactionMagnitude = analyseGroundContactForces(
+      particle,
+      currentTime,
+      {
+        gravity: scene.settings.gravity,
+        groundEnabled: scene.groundEnabled,
+        groundHeight: scene.groundHeight,
+      },
+    ).contact.normalReactionMagnitude;
+    if (!isZeroResultantForce(
+      particle,
+      scene.settings,
+      normalReactionMagnitude,
+    )) {
+      continue;
+    }
+    const point = worldToScreen(state.position, camera);
+    const { centre, radius } = getRenderedParticleGeometry(point, camera);
+    drawZeroResultantMarker(
+      context,
+      centre,
+      calculateZeroResultantMarkerRadius(radius),
+    );
+  }
+}
+
+function renderForceMagnitudeAtArrowTip(
+  context: CanvasRenderingContext2D,
+  magnitudeText: string,
+  magnitude: number,
+  tip: Vec2,
+  screenDirection: Vec2,
+  fontSize: number,
+  hoverTargets: CanvasExactValueHoverTarget[],
+): void {
+  const unitText = " N";
+  const unitWidth = context.measureText(unitText).width;
+  const estimatedLabelWidth =
+    context.measureText(magnitudeText).width + unitWidth;
+  const labelPosition = calculateForceLabelPosition(
+    tip,
+    screenDirection,
+    estimatedLabelWidth,
+    fontSize,
+    Math.max(3, fontSize * 0.2),
+  );
+  const valueWidth = drawCanvasMathValue(
+    context,
+    magnitudeText,
+    labelPosition.x,
+    labelPosition.y,
+    fontSize,
+  );
+  const unitX = labelPosition.x + valueWidth;
+  context.fillText(unitText, unitX, labelPosition.y);
+  const tooltip = getExactValueTooltip(magnitudeText, magnitude);
+  if (tooltip) {
+    hoverTargets.push({
+      left: Math.min(labelPosition.x, unitX) - 4,
+      top: labelPosition.y - fontSize,
+      right: unitX + unitWidth + 4,
+      bottom: labelPosition.y + fontSize,
+      tooltip,
+    });
+  }
 }
 
 function renderHeightMeasurements(
@@ -498,8 +781,8 @@ function renderInitialVelocityAnnotations(
     const arrowHeadWidth = arrowHeadLength * 0.7;
 
     context.save();
-    context.strokeStyle = "#292d2c";
-    context.fillStyle = "#292d2c";
+    context.strokeStyle = INITIAL_VELOCITY_COLOUR;
+    context.fillStyle = INITIAL_VELOCITY_COLOUR;
     context.lineWidth = 3;
     context.lineCap = "round";
     context.setLineDash([10, 8]);
@@ -534,6 +817,8 @@ function renderInitialVelocityAnnotations(
         camera,
         annotation,
         fontSize,
+        annotation.speedText,
+        "m s⁻¹",
       );
     } else if (annotation.kind === "components") {
       renderComponentVelocityNotation(
@@ -601,8 +886,16 @@ function renderAngleVelocityNotation(
   tip: { x: number; y: number },
   screenDirection: Vec2,
   camera: Camera,
-  annotation: AngleInitialVelocityAnnotation,
+  annotation: AngleInitialVelocityAnnotation | AngleForceAnnotation,
   fontSize: number,
+  magnitudeText: string,
+  unit: string,
+  exactValues?: {
+    magnitude: number;
+    angle: number;
+    hoverTargets: CanvasExactValueHoverTarget[];
+  },
+  renderMagnitude = true,
 ): void {
   const referenceDirection = {
     x: annotation.referenceDirection.x,
@@ -657,13 +950,37 @@ function renderAngleVelocityNotation(
     )
       ? referenceAngle - measurementSide * narrowLabelOffset
       : referenceAngle + sweep / 2;
-    context.textAlign = "center";
+    context.textAlign = "left";
     context.textBaseline = "middle";
-    context.fillText(
-      angleText,
-      centre.x + Math.cos(angleLabelDirection) * angleLabelRadius,
-      centre.y + Math.sin(angleLabelDirection) * angleLabelRadius,
+    const angleCentreX =
+      centre.x + Math.cos(angleLabelDirection) * angleLabelRadius;
+    const angleY = centre.y + Math.sin(angleLabelDirection) * angleLabelRadius;
+    const angleX = angleCentreX - context.measureText(angleText).width / 2;
+    const drawnAngleWidth = drawCanvasMathValue(
+      context,
+      annotation.angleText,
+      angleX,
+      angleY,
+      fontSize,
     );
+    context.fillText("°", angleX + drawnAngleWidth, angleY);
+    const angleTooltip = exactValues
+      ? getExactValueTooltip(annotation.angleText, exactValues.angle)
+      : null;
+    if (angleTooltip && exactValues) {
+      exactValues.hoverTargets.push({
+        left: angleX - 4,
+        top: angleY - fontSize,
+        right: angleX + drawnAngleWidth + context.measureText("°").width + 4,
+        bottom: angleY + fontSize,
+        tooltip: angleTooltip,
+      });
+    }
+  }
+
+  if (!renderMagnitude) {
+    context.restore();
+    return;
   }
 
   const arcSectorDirection = referenceAngle + sweep / 2;
@@ -689,8 +1006,41 @@ function renderAngleVelocityNotation(
       (tip.y - centre.y) * 0.58 +
       oppositeNormal.y * camera.pixelsPerMetre * 0.45,
   };
-  context.textAlign = oppositeNormal.x < -0.2 ? "right" : oppositeNormal.x > 0.2 ? "left" : "center";
-  context.fillText(`${annotation.speedText} m s⁻¹`, speedAnchor.x, speedAnchor.y);
+  const magnitudeAlignment = oppositeNormal.x < -0.2
+    ? "right"
+    : oppositeNormal.x > 0.2
+      ? "left"
+      : "center";
+  const unitText = ` ${unit}`;
+  const estimatedMagnitudeWidth =
+    context.measureText(magnitudeText).width + context.measureText(unitText).width;
+  const magnitudeX = magnitudeAlignment === "right"
+    ? speedAnchor.x - estimatedMagnitudeWidth
+    : magnitudeAlignment === "center"
+      ? speedAnchor.x - estimatedMagnitudeWidth / 2
+      : speedAnchor.x;
+  context.textAlign = "left";
+  const drawnMagnitudeWidth = drawCanvasMathValue(
+    context,
+    magnitudeText,
+    magnitudeX,
+    speedAnchor.y,
+    fontSize,
+  );
+  context.fillText(unitText, magnitudeX + drawnMagnitudeWidth, speedAnchor.y);
+  const magnitudeTooltip = exactValues
+    ? getExactValueTooltip(magnitudeText, exactValues.magnitude)
+    : null;
+  if (magnitudeTooltip && exactValues) {
+    exactValues.hoverTargets.push({
+      left: magnitudeX - 4,
+      top: speedAnchor.y - fontSize,
+      right:
+        magnitudeX + drawnMagnitudeWidth + context.measureText(unitText).width + 4,
+      bottom: speedAnchor.y + fontSize,
+      tooltip: magnitudeTooltip,
+    });
+  }
   context.restore();
 }
 
@@ -699,8 +1049,12 @@ function renderComponentVelocityNotation(
   centre: { x: number; y: number },
   tip: { x: number; y: number },
   screenDirection: Vec2,
-  annotation: ComponentInitialVelocityAnnotation,
+  annotation: ComponentInitialVelocityAnnotation | ComponentForceAnnotation,
   fontSize: number,
+  unit = "m s⁻¹",
+  componentValues?: { x: number; y: number },
+  hoverTargets?: CanvasExactValueHoverTarget[],
+  placement: "along-arrow" | "after-tip" = "along-arrow",
 ): void {
   const rowOffset = fontSize * 0.52;
   const numberWidth = Math.max(
@@ -709,7 +1063,7 @@ function renderComponentVelocityNotation(
   );
   const innerPadding = fontSize * 0.32;
   const bracketHeight = fontSize * 2.05;
-  const unitWidth = context.measureText("m s⁻¹").width;
+  const unitWidth = context.measureText(unit).width;
   const midpoint = {
     x: centre.x + (tip.x - centre.x) * 0.55,
     y: centre.y + (tip.y - centre.y) * 0.55,
@@ -723,20 +1077,80 @@ function renderComponentVelocityNotation(
     ? (screenDirection.x >= 0 ? -1 : 1) *
       (fullLabelWidth / 2 + labelClearance)
     : 0;
-  const anchor = {
-    x: midpoint.x + horizontalAvoidance - unitWidth / 2,
-    y: midpoint.y - bracketHeight / 2 - labelClearance,
-  };
+  const tipLabelPosition = placement === "after-tip"
+    ? calculateForceLabelPosition(
+        tip,
+        screenDirection,
+        fullLabelWidth,
+        bracketHeight,
+        Math.max(3, fontSize * 0.2),
+      )
+    : null;
+  const anchor = tipLabelPosition
+    ? {
+        x: tipLabelPosition.x + vectorWidth / 2,
+        y: tipLabelPosition.y,
+      }
+    : {
+        x: midpoint.x + horizontalAvoidance - unitWidth / 2,
+        y: midpoint.y - bracketHeight / 2 - labelClearance,
+      };
   const bracketTop = anchor.y - bracketHeight / 2;
   const bracketBottom = anchor.y + bracketHeight / 2;
   const left = anchor.x - numberWidth / 2 - innerPadding;
   const right = anchor.x + numberWidth / 2 + innerPadding;
   const curveInset = fontSize * 0.32;
 
-  context.textAlign = "center";
+  context.textAlign = "left";
   context.textBaseline = "middle";
-  context.fillText(annotation.componentText.x, anchor.x, anchor.y - rowOffset);
-  context.fillText(annotation.componentText.y, anchor.x, anchor.y + rowOffset);
+  const xValueX =
+    anchor.x - context.measureText(annotation.componentText.x).width / 2;
+  const yValueX =
+    anchor.x - context.measureText(annotation.componentText.y).width / 2;
+  const xValueY = anchor.y - rowOffset;
+  const yValueY = anchor.y + rowOffset;
+  const xValueWidth = drawCanvasMathValue(
+    context,
+    annotation.componentText.x,
+    xValueX,
+    xValueY,
+    fontSize,
+  );
+  const yValueWidth = drawCanvasMathValue(
+    context,
+    annotation.componentText.y,
+    yValueX,
+    yValueY,
+    fontSize,
+  );
+  if (componentValues && hoverTargets) {
+    const xTooltip = getExactValueTooltip(
+      annotation.componentText.x,
+      componentValues.x,
+    );
+    if (xTooltip) {
+      hoverTargets.push({
+        left: xValueX - 4,
+        top: xValueY - fontSize,
+        right: xValueX + xValueWidth + 4,
+        bottom: xValueY + fontSize,
+        tooltip: xTooltip,
+      });
+    }
+    const yTooltip = getExactValueTooltip(
+      annotation.componentText.y,
+      componentValues.y,
+    );
+    if (yTooltip) {
+      hoverTargets.push({
+        left: yValueX - 4,
+        top: yValueY - fontSize,
+        right: yValueX + yValueWidth + 4,
+        bottom: yValueY + fontSize,
+        tooltip: yTooltip,
+      });
+    }
+  }
 
   context.lineWidth = fontSize * 0.11;
   context.setLineDash([]);
@@ -762,7 +1176,7 @@ function renderComponentVelocityNotation(
   context.stroke();
 
   context.textAlign = "left";
-  context.fillText("m s⁻¹", right + unitGap, anchor.y);
+  context.fillText(unit, right + unitGap, anchor.y);
 }
 
 function normaliseDiagramArcSweep(sweep: number): number {

@@ -8,6 +8,7 @@ export interface Scene {
   groundHeight: number;
   groundRough: boolean;
   groundFriction: number;
+  showForceArrows: boolean;
   settings: SimulationSettings;
 }
 
@@ -18,6 +19,7 @@ export function createScene(): Scene {
     groundHeight: GROUND_HEIGHT,
     groundRough: false,
     groundFriction: 0,
+    showForceArrows: true,
     settings: createDefaultSettings(),
   };
 }

@@ -21,6 +21,15 @@ describe("mathematical markup tokenisation", () => {
     ]);
   });
 
+  it("recognises an exact algebraic numerator as one stacked fraction", () => {
+    expect(tokenizeMathText("(−49 + 25√(2))/5")).toEqual([{
+      kind: "fraction",
+      numerator: "−49 + 25√(2)",
+      denominator: "5",
+      exponent: undefined,
+    }]);
+  });
+
   it("keeps entered decimals as decimal number tokens", () => {
     expect(tokenizeMathText("2.5 + (-9.8)(0.3)")).not.toContainEqual(
       expect.objectContaining({ kind: "fraction" }),
@@ -33,6 +42,18 @@ describe("mathematical markup tokenisation", () => {
     ]);
     expect(tokenizeMathText("s⁻²")).toEqual([
       { kind: "identifier", value: "s", exponent: "−2" },
+    ]);
+  });
+
+  it("recognises force summation and true identifier subscripts", () => {
+    expect(tokenizeMathText("ΣF_x = ma_x")).toEqual([
+      { kind: "summation", value: "Σ" },
+      { kind: "identifier", value: "F", subscript: "x", exponent: undefined },
+      { kind: "space", value: " " },
+      { kind: "operator", value: "=" },
+      { kind: "space", value: " " },
+      { kind: "identifier", value: "m", exponent: undefined },
+      { kind: "identifier", value: "a", subscript: "x", exponent: undefined },
     ]);
   });
 

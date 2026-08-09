@@ -6,9 +6,10 @@ import {
 import type { KinematicPhase } from "./kinematicPhase";
 import type { Particle } from "../model/Particle";
 import {
-  calculateGroundImpactTime,
+  calculateGroundImpactTimeWithAcceleration,
   type PhysicsEnvironment,
 } from "../physics/calculateParticleState";
+import { analyseNonContactForces } from "../dynamics/forceAnalysis";
 import {
   derivedValue,
   divideRationals,
@@ -79,10 +80,10 @@ export function determineMotionGraphEndTime(
   environment: PhysicsEnvironment,
 ): number {
   if (phase.kind === "free-flight" && environment.groundEnabled) {
-    const impactTime = calculateGroundImpactTime(
+    const impactTime = calculateGroundImpactTimeWithAcceleration(
       particle.initialPosition.y,
       particle.initialVelocity.y,
-      environment.gravity,
+      analyseNonContactForces(particle, environment.gravity).acceleration.y,
       environment.groundHeight,
     );
     if (impactTime !== null && impactTime > phase.startTime) return impactTime;

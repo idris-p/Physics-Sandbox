@@ -1,585 +1,903 @@
-# Physics Sandbox — 2D Kinematics Phase Report
+# Physics Sandbox — Basic Forces Phase Report
 
 ## 1. Report purpose
 
-This report records the complete state of the educational 2D kinematics phase implemented in the Physics Sandbox.
+This report records the implemented state of the **Basic Forces** milestone in the educational A-level Mechanics and Physics sandbox.
 
-The phase builds on the original metre-based canvas, point-particle model, gravity, ground, camera, selection, and deterministic time reconstruction. It extends that foundation into a general analytical 2D constant-acceleration teaching tool with editable Cartesian and polar initial velocity, coordinate conventions, exact kinematic working, SUVAT, horizontal-motion analysis, motion graphs, mathematical scene annotations, and analytical playback events.
+The phase extends the existing analytical 2D kinematics system with the first free-particle dynamics pipeline:
 
-The result remains a mechanics diagram and teaching application rather than a game-physics engine. World mechanics, exact mathematical provenance, rendering, and UI state remain separate concerns.
+```text
+particle mass + automatic weight + constant applied forces
+                         ↓
+                  resultant force
+                         ↓
+                       F = ma
+                         ↓
+             force-derived acceleration
+                         ↓
+       existing analytical 2D kinematics
+                         ↓
+       SUVAT, graphs, events, and diagrams
+```
+
+The implementation remains intentionally limited to constant forces acting through mathematical point particles plus the derived unilateral normal reaction of the existing horizontal ground. It is not a rigid-body engine and does not introduce friction mechanics, inclined planes, tension, springs, energy, momentum, or a general symbolic solver.
+
+This report focuses on what was delivered by the Basic Forces phase. Earlier kinematics features are discussed only where the force layer integrates with or changes them.
 
 ## 2. Phase outcome
 
-The application now supports particles moving simultaneously in horizontal and vertical directions:
+The central phase objective has been achieved: acceleration is now derived from forces instead of being independently prescribed.
+
+For each particle of mass `m`, the dynamics layer constructs weight, collects all user-applied forces, sums their world vectors, and calculates acceleration:
 
 ```text
-x(t) = x₀ + uₓt
-y(t) = y₀ + uᵧt − 1/2 gt²
-vₓ(t) = uₓ
-vᵧ(t) = uᵧ − gt
+W = mg
+
+weight_world = (0, −mg)
+
+ΣF = weight + F₁ + F₂ + ...
+
+a = ΣF / m
 ```
 
-When the optional horizontal ground is enabled, the first point-position contact is found analytically. At contact the mathematical particle is exactly on the ground. After contact the particle remains at the impact point with zero velocity and acceleration; there is no bounce, restitution, frictional deceleration, or rendered-radius collision offset.
+Component form is:
 
-A user can now:
+```text
+ΣFₓ = maₓ
+ΣFᵧ = maᵧ
 
-- give every particle a 2D initial velocity in Cartesian or polar form;
-- change the displayed positive x and y directions;
-- choose the reference axis and clockwise/anticlockwise angle convention;
-- inspect horizontal or vertical `s`, `u`, `v`, `a`, and `t` values;
-- inspect exact horizontal-motion and SUVAT calculations;
-- view live displacement–time and velocity–time graphs;
-- enlarge graphs and calculations without losing mathematical quality;
-- pause analytically at ground contact, greatest height, a chosen vertical position, or a particle coincidence;
-- inspect exact fractions, surds, and trigonometric expressions with three-decimal hover values.
+aₓ = ΣFₓ / m
+aᵧ = ΣFᵧ / m
+```
 
-## 3. Architecture
+Weight-only motion therefore reproduces the previous gravitational behavior naturally:
 
-The implementation is split into focused modules:
+```text
+aᵧ = −mg / m = −g
+```
+
+Applied forces can produce horizontal acceleration, modify vertical acceleration, cancel weight, or create upward acceleration. The same derived acceleration is consumed by state reconstruction, kinematic analysis, motion graphs, analytical pause events, exact working, and canvas annotations.
+
+## 3. Delivered feature summary
+
+The Basic Forces phase implements:
+
+- meaningful, strictly positive per-particle mass;
+- automatic non-removable weight derived from mass and global gravity;
+- zero or more ordered constant applied forces per particle;
+- add and remove controls for applied forces;
+- Cartesian force entry using signed `Fₓ` and `Fᵧ` components;
+- Polar force entry using magnitude and direction;
+- reversible Cartesian/Polar editor switching without changing the physical vector;
+- convention-independent world-vector storage;
+- re-expression under positive-axis and angle-convention changes;
+- exact special-angle, arbitrary-trigonometric, rational, and surd display where supported;
+- force contribution collection and component-wise summation;
+- horizontal and vertical resultant-force calculations;
+- numerical and exact-display `F = ma` working;
+- solid scene arrows for weight and applied forces;
+- an optional red resultant-force arrow;
+- a global Scene Properties control for force-arrow visibility;
+- force-derived analytical motion on both axes;
+- full horizontal SUVAT promotion when `aₓ ≠ 0`;
+- force-aware motion graphs and analytical event scheduling;
+- a derived smooth-ground normal reaction with unilateral lift-off;
+- automated unit and integration coverage for the dynamics pipeline.
+
+## 4. Architecture and dependency direction
+
+The phase establishes this dependency direction:
+
+```text
+model
+  ↓
+dynamics / force analysis
+  ↓
+physics state reconstruction
+  ↓
+kinematics and analytical events
+  ↓
+canvas and UI presentation
+```
+
+The principal files are:
 
 ```text
 src/
   model/
+    AppliedForce.ts
     Particle.ts
     Scene.ts
     SimulationSettings.ts
+
+  dynamics/
+    appliedForceEditorConversion.ts
+    editAppliedForce.ts
+    forceAnalysis.ts
+    forceDisplay.ts
 
   physics/
     calculateParticleState.ts
     calculateSceneState.ts
 
   kinematics/
-    angleConvention.ts
-    exactDisplay.ts
     horizontalKinematics.ts
     kinematicPhase.ts
     motionGraphs.ts
     particleKinematics2D.ts
-    polarVelocityExact.ts
-    signConvention.ts
     suvat.ts
-    verticalKinematics.ts
 
   simulation/
     autoPauseTimeDisplay.ts
-    editInitialConditions.ts
     particleCoincidence.ts
     phaseIntervalNote.ts
     playback.ts
 
   canvas/
-    greatestHeightAnnotation.ts
-    initialVelocityAnnotation.ts
-    particleGeometry.ts
+    forceAnnotation.ts
     renderer.ts
-    verticalTargetAnnotation.ts
 
   ui/
     controls.ts
     exactValueTooltip.ts
     mathMarkup.ts
-    motionGraphCanvas.ts
+
+  main.ts
 ```
 
-The separation is deliberate:
+The mechanical force-analysis module has no dependency on Canvas or DOM APIs. Resultant force and acceleration are derived values, not duplicated persistent state. Presentation modules receive the same model data but cannot mutate the mechanics calculation.
 
-- persistent initial conditions and per-particle options live in `model/`;
-- physical world states are reconstructed in `physics/`;
-- scalar conventions, exact mathematics, equations, and graph plans live in `kinematics/`;
-- playback event scheduling lives in `simulation/`;
-- diagram geometry and Canvas drawing live in `canvas/`;
-- validation, MathML, controls, dialogs, and graph UI live in `ui/`;
-- `main.ts` composes these systems around one global scene time.
+## 5. Particle and applied-force model
 
-The analytical modules do not depend on DOM or Canvas APIs.
+### 5.1 Particle additions
 
-## 4. Particle and settings model
-
-Each particle now retains:
-
-- a stable ID and mass;
-- initial world position;
-- initial world velocity vector;
-- literal Cartesian velocity input text and the conventions under which it was entered;
-- current velocity editor mode;
-- polar speed/angle text and its angle convention when polar input is the source;
-- per-particle pause options;
-- exact entered data for the configurable vertical target.
-
-The per-particle pause flags are:
+Each `Particle` now contains:
 
 ```ts
-pauseAtGroundContact
-pauseAtGreatestHeight
-pauseAtVerticalTarget
-pauseAtParticleCoincidence
+mass: number;
+massInput: string;
+appliedForces: AppliedForce[];
+appliedForceEditorMode: "components" | "magnitude-direction";
+showResultantForce: boolean;
 ```
 
-Global settings retain the numeric and entered gravity plus:
+Default particle values are:
+
+```text
+mass = 1 kg
+applied forces = none
+force editor = Cartesian components
+show resultant force = false
+```
+
+`massInput` preserves the user's literal valid entry separately from the numerical mass. This lets force working retain values such as `2.5` as entered instead of converting them into an unrelated rational presentation.
+
+### 5.2 AppliedForce structure
+
+An applied force stores:
+
+- a stable ID;
+- an authoritative world-space `Vec2`;
+- the currently visible editor mode;
+- the representation that last supplied authoritative input;
+- Cartesian input text and the positive directions used when it was entered;
+- optional Polar magnitude/angle text and its angle convention.
+
+Conceptually:
 
 ```ts
-positiveX: "left" | "right"
-positiveY: "up" | "down"
-angleReferenceAxis:
-  | "positive-x"
-  | "negative-x"
-  | "positive-y"
-  | "negative-y"
-angleDirection: "anticlockwise" | "clockwise"
+interface AppliedForce {
+  id: string;
+  vector: Vec2;
+  inputMode: "components" | "magnitude-direction";
+  inputSource: "components" | "magnitude-direction";
+  componentInput: {
+    x: { text: string; positiveDirection: "left" | "right" };
+    y: { text: string; positiveDirection: "up" | "down" };
+  };
+  polarInput?: {
+    magnitudeText: string;
+    angleText: string;
+    angleReferenceAxis: ...;
+    angleDirection: "clockwise" | "anticlockwise";
+  };
+}
 ```
 
-The world itself never changes orientation: world positive x remains right and world positive y remains up. Conventions alter educational scalar representation only.
+The world vector is always the physical authority. Editor provenance exists to preserve educational notation and exact display; it never replaces the vector as the mechanics source of truth.
 
-## 5. Initial velocity editing
+## 6. Mass behavior and validation
 
-Particle Properties provides two input modes.
-
-### Cartesian mode
-
-The user enters independent `uₓ` and `uᵧ` components. Each component:
-
-- accepts signed values with at most three decimal places;
-- is interpreted using the current positive direction for that axis;
-- preserves its literal input text and entry convention;
-- updates world velocity without changing the other component.
-
-### Polar mode
-
-The user enters a positive speed and an angle in `(-180°, 180°]`. The angle is interpreted using the currently selected reference axis and rotation direction.
-
-Changing angle-measurement settings later does not rotate any velocity vector. Instead, each polar velocity is re-expressed from the new reference axis so every arrow continues to point in the same world direction.
-
-Changing between Cartesian and polar editor modes is reversible. It changes only the visible editor representation and never resets or numerically rebuilds the world velocity.
-
-Polar-to-Cartesian conversion displays exact rational, surd, or trigonometric components. Cartesian-to-polar conversion derives the exact magnitude from `uₓ² + uᵧ²` and uses a quadrant-aware `arctan(...)` expression whenever the angle is not an exact axis angle. The original authoritative input provenance remains attached to the particle, so repeatedly switching modes does not degrade exact values.
-
-Symbolic converted fields use the same dual exact/edit interaction as the timer. Their normal state is MathML with stacked fractions, radicals, trig functions, or `arctan` as appropriate. Hovering shows the numerical value to three decimal places. Clicking the exact value replaces it with a selected three-decimal text input for editing; leaving it unchanged restores the exact form. Exact provenance is tracked per field, so editing one Cartesian component or one Polar value does not replace the untouched field's exact expression with its temporary decimal editor value. Integers and terminating decimals requiring at most three decimal places remain ordinary editable inputs and do not receive redundant exact-value behaviour.
-
-## 6. Coordinate and angle conventions
-
-All convention conversions are centralized.
-
-Horizontal and vertical world vectors are converted to educational scalars through `signConvention.ts`. Polar directions are converted to and measured from world vectors through `angleConvention.ts`.
-
-This ensures that changing any of the following does not alter the physical trajectory or event timing:
-
-- left/right positive x;
-- up/down positive y;
-- positive or negative x/y angle reference axis;
-- clockwise or anticlockwise angle measurement.
-
-Measured polar angles are normalized to `(-180°, 180°]`, cleaned around zero, and displayed to at most the supported input precision.
-
-## 7. Analytical 2D mechanics
-
-The physics layer reconstructs every state directly from the particle's initial conditions and global time. It does not accumulate Euler steps.
-
-Before ground contact:
-
-- horizontal acceleration is zero;
-- horizontal velocity is constant;
-- horizontal displacement is linear in time;
-- vertical acceleration is `−g` in world coordinates;
-- vertical velocity and position follow constant-acceleration equations.
-
-Ground impact time solves the vertical quadratic analytically. Impact x-position is then:
+Mass is exposed at the top of the Forces tab as:
 
 ```text
-x_impact = x₀ + uₓ t_impact
+Mass       m = [ ... ] kg
 ```
 
-At the exact positive contact instant, the free-flight limiting velocity and acceleration remain available for teaching calculations. Times after contact belong to a grounded phase with zero displacement from the phase start, zero velocity, and zero acceleration.
+Implemented rules:
 
-Rendered particle radius is never used by the mechanics layer.
+- mass must be strictly greater than zero;
+- input accepts at most three decimal places through the shared positive-property parser;
+- invalid input restores the previous valid text and marks the field invalid;
+- blank or non-numeric values are rejected;
+- default mass is `1 kg`;
+- internal calculations retain normal JavaScript number precision;
+- no per-step rounding is performed.
 
-## 8. Kinematic phases
+Changing mass immediately updates:
 
-`determineActiveKinematicPhase` selects the interval of constant acceleration relevant to the current time.
+- weight;
+- resultant force;
+- acceleration;
+- reconstructed current position and velocity;
+- kinematic values and equations;
+- motion graphs;
+- greatest-height, ground-contact, target, and coincidence analysis.
 
-Current phases are:
+A mass edit does not numerically continue from the currently drawn state. The scene is reconstructed analytically at the existing global time from the same initial conditions with the new constant acceleration.
 
-- `free-flight`, beginning at scene time zero;
-- `grounded`, beginning at the exact first-contact time.
+## 7. Automatic weight
 
-Kinematics, graphs, and equations use phase-relative values. This prevents a post-impact zero-acceleration analysis from incorrectly mixing values from the earlier gravitational phase.
+Weight is generated in `forceAnalysis.ts`; it is not stored as an applied force and cannot be removed.
 
-When a phase starts after `t = 0`, a yellow acceleration-change note shows:
+For non-negative global gravity:
 
-- the exact phase-start time;
-- the exact current global time;
-- the subtraction producing phase elapsed time.
+```ts
+weight = {
+  x: 0,
+  y: -particle.mass * gravity,
+};
+```
 
-The note never substitutes an approximation for an available fraction, surd, or trigonometric value. Symbolic values expose a `(3 d.p.)` hover result.
+This guarantees that the canonical world direction of weight is downward regardless of the user's displayed positive-y convention.
 
-## 9. 2D Kinematics inspector
-
-The analysis panel can switch between Vertical and Horizontal components.
-
-For either axis, it derives phase-relative:
+The Forces tab shows weight as live working:
 
 ```text
-s — signed displacement
-u — phase-start velocity
-v — current velocity
-a — phase acceleration
-t — phase elapsed time
+Weight = mg = m × g = result N
 ```
 
-The selected x/y convention is applied consistently to `s`, `u`, `v`, and `a`; time remains unsigned.
+The entered mass and gravity strings are retained in the multiplication. The mass symbol is shown in the app's bold upright notation, while `g` uses the same italic physics-symbol style as the Gravity control in Scene Properties.
 
-Horizontal analysis uses the same data model but hides redundant `u` and `a` rows where the compact presentation does not need them. The horizontal equation section uses:
+Weight updates whenever mass or gravity changes. When gravity is zero, weight is the zero vector and its scene arrow is omitted.
+
+The implementation does not add gravity again as a separate hard-coded acceleration. Weight divided by mass is the only free-flight gravity path.
+
+## 8. Applied-force editing
+
+### 8.1 Adding and removing forces
+
+The Forces tab contains an `+ Add force` button. Each activation appends a new zero force with a unique ID to the selected particle's ordered force list.
+
+Each editor is headed `Applied Force n` and includes a remove button. Removing a force deletes it from the model, analysis, rendering, and reconstructed motion. Remaining force order is preserved, while the displayed ordinal names are regenerated from current list order.
+
+There is deliberately no global force palette and no force-type taxonomy. All user-created forces remain mechanically generic `AppliedForce` objects.
+
+### 8.2 Cartesian input
+
+Cartesian mode exposes:
 
 ```text
-s = vt
+Fₓ = [ ... ] N
+Fᵧ = [ ... ] N
 ```
 
-Vertical analysis presents all five standard SUVAT relationships.
+Each component:
 
-The value boxes and timer field were widened to improve exact-value readability. Text size remains normal for trig expressions such as `10 sin 53°`; compact text is used only where a true stacked fraction needs extra vertical room.
+- accepts signed values;
+- accepts at most three decimal places;
+- follows the selected educational positive direction for its axis;
+- stores the entered text and convention;
+- converts immediately to a canonical world component.
 
-Values that should be mathematically zero at event boundaries are canonicalized to zero. For example, same-height ground contact displays `s = 0` rather than a long expression that merely evaluates to zero, and greatest height displays `v = 0` directly.
+For example, entering displayed `(6, −4)` while positive x is left and positive y is down stores world force `(-6, 4)`.
 
-## 10. SUVAT calculations
+### 8.3 Polar input
 
-The vertical section implements:
+Polar mode exposes:
 
 ```text
-v = u + at
-s = ut + 1/2 at²
-s = 1/2(u + v)t
-v² = u² + 2as
-s = vt − 1/2 at²
+F = [ ... ] N
+θ = [ ... ] °
 ```
 
-Each result contains:
+Magnitude:
 
-- a stable equation ID;
-- the formula;
-- exact substitution using current known values;
-- the calculated result and expected kinematic quantity;
-- units;
-- exact final-value lines;
-- optional square-root working for the no-time equation.
+- must be non-negative;
+- accepts at most three decimal places;
+- may be zero.
 
-For `v² = u² + 2as`, taking the square root displays `±` because the equation alone admits both velocity signs. The Kinematics `v` box continues to show the physically relevant signed velocity for the selected time.
+Direction:
 
-Calculations are fixed educational evaluations, not a general symbolic equation solver.
+- must lie in `(-180°, 180°]`;
+- uses the selected reference axis;
+- uses the selected clockwise or anticlockwise measurement direction;
+- converts to a canonical world vector using the existing angle infrastructure.
 
-## 11. Exact-value system
+### 8.4 Shared editor mode
 
-`exactDisplay.ts` separates numerical value from mathematical display provenance.
+One Cartesian/Polar selector controls all applied-force editors on the selected particle. Switching mode updates the visible representation of every applied force but does not change any stored world vector.
 
-Supported exact forms include:
+The distinction between `inputMode` and `inputSource` is important:
 
-- literal entered decimals;
-- reduced rational numbers backed by `bigint`;
-- square roots and rational multiples of surds;
-- exact trigonometric monomials;
-- preserved exact expressions when a compact algebraic representation is needed.
+- `inputMode` controls what the editor currently shows;
+- `inputSource` records which representation most recently supplied the physical vector.
 
-Exact rational arithmetic is used for addition, subtraction, multiplication, division, and squaring. Algebraic operations simplify compatible values and cancel exact terms before falling back to numerical presentation.
+Merely viewing the other representation does not discard exact provenance. Committing a value in that representation makes it the new source.
 
-This is what allows expressions such as a projectile's same-height displacement to simplify to exactly zero instead of retaining two long cancelling terms.
+## 9. Coordinate and angle invariance
 
-## 12. Exact trigonometric values
-
-Polar components preserve exact trigonometric structure.
-
-Special angles throughout the full circle use exact rational or surd values, including the familiar 0°, 30°, 45°, 60°, 90° families and their signed equivalents in other quadrants.
-
-For a non-special entered angle such as 53°, expressions remain symbolic:
+The canonical mechanics axes remain:
 
 ```text
-uᵧ = 10 sin 53°
-uₓ = 10 cos 53°
++x = world right
++y = world up
 ```
 
-These expressions are carried through compatible SUVAT, graph-coordinate, greatest-height, and auto-pause calculations. Exact algebra handles products such as squared trig components and cancels matching terms where possible.
+Positive-axis and angle controls are educational display conventions only.
 
-## 13. Fractions, surds, MathML, and hover values
+### 9.1 Cartesian sign changes
 
-Fractions are rendered as actual stacked fractions, not slash-delimited plain text. Surds use native mathematical radical layout. Superscripts, signs, units, and equation grouping are produced through the MathML builder in `mathMarkup.ts`.
+Changing positive x from right to left, or positive y from up to down:
 
-Exact values remain primary in:
+- re-expresses component values and force-resolution signs;
+- does not mutate `AppliedForce.vector`;
+- does not change resultant world force;
+- does not change physical acceleration;
+- does not change particle trajectories or event times;
+- does not rotate scene arrows.
 
-- Kinematics boxes;
-- SUVAT and horizontal-motion calculations;
-- the timer at exact pause events;
-- acceleration-change notes;
-- canvas measurements;
-- enlarged graph-coordinate annotations.
+### 9.2 Angle-convention changes
 
-When an exact value is a fraction, surd, trig expression, or other symbolic form, hovering exposes its numerical value rounded to three decimal places followed by `(3 d.p.)`.
+Changing the reference axis or clockwise/anticlockwise convention:
 
-No approximation is printed directly in greatest-height or comparable canvas annotations. The tooltip is the only approximate companion to those exact values.
+- re-measures Polar directions from the unchanged world vector;
+- updates stored Polar display text when Polar input is authoritative;
+- preserves force magnitude;
+- leaves all physical mechanics unchanged.
 
-## 14. Enlarged calculation dialog
+This matches the invariant already used for initial velocity and prevents a presentation preference from changing the experiment.
 
-Every equation card can be opened by pointer or keyboard into a large native dialog.
+## 10. Force-analysis layer
 
-The dialog redraws the same exact formula, substitution, result, units, and square-root working at a larger size. It reuses the existing calculation data rather than maintaining a second calculation path.
+`analyseParticleForces` is the pure mechanical core of the phase.
 
-It can close through its close button, backdrop, or Escape and does not change selection, time, graph state, or inspector expansion.
+It returns:
 
-## 15. Initial-velocity scene annotations
+```ts
+interface ParticleForceAnalysis {
+  forces: ForceContribution[];
+  resultant: Vec2;
+  acceleration: Vec2;
+}
+```
 
-At `t = 0`, each non-zero initial velocity is drawn as a dashed 2.5 m direction arrow from the particle centre.
+The ordered contribution list contains:
 
-Polar input displays:
+1. automatic weight;
+2. every applied force in particle order.
 
-- the entered speed;
-- a reference ray and signed directional arc for non-right-angle cases;
-- the absolute magnitude of the entered angle in the visible label.
-
-For every multiple of 90°, including 0°, ±90°, and 180°, the angle arc, reference marker, and angle value are omitted entirely. No right-angle square is drawn.
-
-Cartesian input displays:
-
-- a two-component column vector when both components are non-zero;
-- only the speed magnitude when either component is zero.
-
-Changing x/y signs or the angle convention updates labels and references while keeping the arrow pointed along the same world velocity.
-
-## 16. Greatest-height and vertical-target annotations
-
-When an enabled greatest-height pause triggers, the scene draws an exact vertical measurement for each triggering particle.
-
-With ground enabled, the reference is the mathematical ground height. Without ground, the reference is the particle's initial y-position. The measurement is calculated from point positions only.
-
-The dimension line is offset 0.75 m horizontally from the particle centre. Its perpendicular construction accounts for the rendered circle only when deciding where to begin drawing, never when calculating the height.
-
-The label uses an exact rational, surd, or trig-derived value and never displays an inline approximation.
-
-The configurable vertical-position pause uses the same measurement style:
-
-- with ground enabled, the input is a height above ground;
-- without ground, it is signed vertical displacement from the initial position.
-
-## 17. Motion graphs
-
-The analysis panel contains, in order:
-
-1. a displacement–time graph;
-2. a velocity–time graph.
-
-The graphs update in real time and draw the motion curve in red.
-
-Graph planning occurs before playback scaling is locked, so axes do not rescale from frame to frame. The selected interval is the current constant-acceleration phase, ending at ground contact where applicable or at a stable time window otherwise.
-
-Axis behaviour includes:
-
-- only ranges relevant to the actual motion;
-- no negative y-range when no negative value occurs;
-- a true zero axis when positive and negative values are both needed;
-- no duplicate line of negative labels at the plot bottom;
-- padding that keeps extrema near, but not touching, the plot edge;
-- gridlines at every tick;
-- pleasant tick intervals based on `1, 2, 4, 5 × 10ⁿ`, including `0.1`, `0.2`, `0.4`, `0.5`, `1`, `2`, `4`, `5`, `10`, and `20`;
-- no redundant zero label on the time axis.
-
-The compact graph canvas is clipped so neither the curve nor axes are obscured by the properties scrollbar.
-
-## 18. Enlarged graph dialog
-
-Clicking either graph opens a large dialog. The cursor uses a pointer/click affordance.
-
-The enlarged graph is redrawn at its own 1200 × 560 plotting resolution rather than scaling the compact bitmap, preserving line and text quality.
-
-Enlarged graphs mark and annotate:
-
-- displacement turning points;
-- x-intercepts;
-- y-intercepts;
-- velocity zero crossings.
-
-Labels use the requested compact forms:
-
-- `(x, y)` for turning points;
-- `x` for x-intercepts;
-- `y` for y-intercepts.
-
-They are red, placed close to their mathematical point, and use placement logic that avoids covering the curve and axis tick labels. Exact coordinates retain fraction, surd, or trig form and provide three-decimal hover tooltips. The tooltip exists only in the foreground dialog layer; no duplicate tooltip is rendered behind the modal.
-
-## 19. Playback and time navigation
-
-There is one global scene time.
-
-Playback advances continuously but clamps exactly to the earliest scheduled pause rather than waiting for a later animation frame. The selected particle's state, timer, Kinematics values, equations, graphs, and annotations all refresh on that same final frame.
-
-Manual Previous and Next controls snap to adjacent interval boundaries instead of adding or subtracting from the current arbitrary time:
-
-- at a 1 s step, `3.72` moves to `3` or `4`;
-- at a 0.1 s step, it moves to `3.7` or `3.8`;
-- at a 0.01 s step, it moves to `3.72` or `3.73` as appropriate.
-
-If already on a boundary, navigation moves one complete interval. Time never moves below zero.
-
-The play button distinguishes playing, paused, and pause-pending states. Requesting a pause during playback schedules the next integer second.
-
-## 20. Per-particle pause options
-
-The Particle Properties pause controls are evenly spaced and ordered:
-
-1. Ground contact;
-2. Greatest height;
-3. Height above ground or vertical displacement;
-4. Particle coincidence.
-
-The switches are native checkboxes visually represented by diagram-style toggles. Their invisible interactive bounds are anchored exactly to the visible switch, preventing focus-induced phantom scrolling, bottom whitespace, or title clipping in the scrollable properties panel.
-
-### Ground contact
-
-The next positive ground impact is solved analytically. An initially resting particle does not produce a `t = 0` event.
-
-### Greatest height
-
-For positive world vertical launch velocity and positive gravity:
+The resultant is calculated component by component:
 
 ```text
-t = uᵧ / g
+resultant.x = Σ force.x
+resultant.y = Σ force.y
 ```
 
-The scheduler groups all particles reaching their enabled earliest greatest-height event.
+Acceleration is then:
 
-### Configurable vertical target
+```text
+acceleration.x = resultant.x / mass
+acceleration.y = resultant.y / mass
+```
 
-The quadratic is solved for all candidate crossings. The next strictly future valid root is selected. A crossing below enabled ground or after an earlier impact is rejected.
+The function rejects a non-positive mass defensively even though the UI already prevents one from being committed.
 
-### Particle coincidence
+Weight, resultant, and acceleration are recomputed when requested. None is persisted as editable model state, avoiding stale or contradictory mechanics data.
 
-Coincidence pausing is analytical and based only on mathematical point positions.
+## 11. Exact force display
 
-For each relevant particle pair, trajectories are split at ground-impact boundaries into polynomial segments. Relative x and y polynomials are solved and verified on each segment. This detects isolated intersections between animation frames as well as the start of a shared stationary interval.
+The numerical dynamics result is paired with a separate exact-display pipeline in `forceDisplay.ts`.
 
-Rules implemented:
+This layer reuses the existing `DisplayValue` infrastructure rather than creating a force-specific mathematics engine. It preserves:
 
-- at least one particle in the pair must have the option enabled;
-- `t = 0` is excluded;
-- a later reunion remains eligible even when the particles also coincided at `t = 0`;
-- only the earliest future coincidence is scheduled;
-- simultaneous pairs/groups cause one pause at their shared time;
-- a continuous coincident interval triggers only at its start;
-- a phase boundary does not retrigger particles that were already continuously coincident;
-- rendered circle radius is irrelevant;
-- sign and angle convention changes do not affect timing.
+- entered decimal provenance;
+- reduced rational values;
+- special-angle surds;
+- arbitrary-angle trigonometric expressions;
+- exact sums where compatible;
+- exact division through `F = ma` where supported.
 
-## 21. Exact pause times
+Examples covered by the implementation include:
 
-Greatest-height, ground-contact, and vertical-target pauses can retain exact time forms:
+```text
+10 N at 30°
 
-- reduced fractions;
-- square roots;
-- rational surds;
-- quadratic surds;
-- rational trigonometric expressions.
+Fₓ = 5√3 N
+Fᵧ = 5 N
+```
 
-The correct quadratic root sign is retained for the actual event. Same-height polar ground contact simplifies through `2uᵧ/g`, preserving exact surd or trig components rather than reconstructing a decimal approximation.
+and:
 
-The timer displays the exact form and exposes its three-decimal value on hover.
+```text
+10 N at 53°
 
-## 22. Properties-panel and interaction refinements
+Fₓ = 10 cos(53°) N
+Fᵧ = 10 sin(53°) N
+```
 
-The contextual properties stack keeps the title fixed while content scrolls beneath it. Scroll position and Kinematics expansion state are preserved when the selected particle refreshes.
+Mixed exact force sums remain structured through acceleration calculation. For example, weight plus a 45° force can retain:
 
-Implemented refinements include:
+```text
+(−49 + 25√2) / 5
+```
 
-- widened Kinematics and timer value fields;
-- an internal scrollbar gutter so content is not obscured;
-- evenly spaced pause rows;
-- correctly anchored checkbox focus geometry;
-- keyboard-accessible calculation and graph dialogs;
-- pointer cursor for clickable graphs;
-- read-only values visually distinct from editable white input fields;
-- selected-particle white pulsing that does not alter mechanics or hit testing.
+rather than collapsing immediately to a rounded decimal.
 
-## 23. Input validation and precision
+Exact forms remain primary. A three-decimal tooltip is attached to symbolic final answers when an approximation is useful. Intermediate mechanics calculations are never rounded to three decimal places.
 
-User-entered gravity, coordinates, velocity components, speed, angle, mass, target values, and time use focused parsers.
+## 12. Forces tab and analysis UI
 
-Mechanics inputs generally accept at most three decimal places. Invalid entries restore the prior valid text and receive an invalid state. Direct scene-time inspection accepts greater decimal precision so exact event times can be inspected without forced truncation.
+Particle Properties now uses three accessible tabs directly beneath its title:
 
-Physics calculations use normal JavaScript number precision and are not rounded after each operation. Rounding is confined to presentation and hover text.
+1. `General` — position and pause controls;
+2. `Forces` — mass, forces, and dynamics analysis;
+3. `Kinematics` — initial velocity, component analysis, graphs, and SUVAT.
 
-## 24. Rendering and point-particle rules
+The tab buttons expose appropriate tab roles, selected state, controlled panels, and keyboard navigation through Left, Right, Home, and End. Each tab preserves its own scroll position.
 
-World coordinates are measured in metres and converted explicitly through the camera. Panning, zooming, grid alignment, ground, particles, arrows, dimensions, and annotations all use the same world-to-screen boundary.
+### 12.1 Forces tab order
 
-The particle remains a mathematical point. Rendered circle size is used only for drawing and pointer hit testing. It is not used for:
+The Forces tab is organized as:
 
-- ground impact;
-- displacement;
-- greatest height;
-- target crossings;
-- particle coincidence;
-- graph data;
-- kinematic values.
+```text
+Mass
+Weight
+Normal Reaction, when active
+Applied forces
+  Applied Force 1
+  Applied Force 2
+  ...
++ Add force
+Show resultant force
+Resolve horizontally
+Resolve vertically
+F = ma
+```
 
-Coincident particles can be grouped for rendering without changing their shared mathematical position.
+### 12.2 Resolution cards
 
-## 25. Automated test coverage
+`Resolve horizontally` displays the signed contribution sum and final `ΣFₓ` in newtons.
 
-The current suite contains 300 tests across 27 test files.
+`Resolve vertically` displays the signed contribution sum and final `ΣFᵧ` in newtons.
 
-Coverage includes:
+The summation expressions are visually aligned with the `aₓ` and `aᵧ` expressions in the `F = ma` card. MathML summation spacing is controlled explicitly so the mathematical glyphs share the intended left alignment.
 
-- free fall, horizontal invariance, ground impact, and deterministic reconstruction;
-- point-particle ground rules and post-impact state;
-- horizontal and vertical sign conversion;
-- angle conversion and convention invariance;
-- Cartesian and polar initial-condition editing;
-- reversible exact Cartesian/polar editor conversion, including quadrant-aware `arctan` forms;
-- special-angle surds and arbitrary-angle trig expressions;
-- 2D Kinematics values;
-- all SUVAT and horizontal-motion equations;
-- exact rational, surd, trig, cancellation, and final-answer formatting;
-- phase selection and exact phase notes;
-- greatest-height, target, ground-contact, and coincidence pause scheduling;
-- isolated, simultaneous, future, and continuous-interval coincidences;
-- exact auto-pause displays;
-- motion-graph planning, axes, ranges, ticks, annotations, and placement;
-- initial-velocity, greatest-height, target, and hover-target canvas geometry;
-- MathML tokenization, exact-value tooltips, control parsing, and text sizing;
-- camera conversion and selected-object presentation.
+### 12.3 F = ma card
 
-## 26. Verification status
+The acceleration card displays both components. Each line shows:
 
-As of 6 August 2026:
+```text
+aₓ = Fₓ/m = (current ΣFₓ)/(current m) = final acceleration
 
-- all 300 automated tests pass;
+aᵧ = Fᵧ/m = (current ΣFᵧ)/(current m) = final acceleration
+```
+
+Symbolic and substituted divisions are rendered as actual stacked fractions through MathML.
+
+### 12.4 Enlarged calculations
+
+The two resolution cards and the `F = ma` card are pointer- and keyboard-activatable. Enter or Space opens the shared calculation dialog.
+
+The dialog rebuilds the current MathML at enlarged size instead of scaling a bitmap. It keeps live exact values and tooltips, uses force-specific headings, and can be closed through the standard dialog controls.
+
+### 12.5 Input and visual consistency
+
+The `+ Add force` control uses the same grey fill as the particle marker. Read-only force results remain visually distinct from white editable fields. Controls follow the existing restrained diagram-style palette, focus treatment, and rounded-corner language.
+
+## 13. Force arrows and canvas annotations
+
+### 13.1 Arrow geometry
+
+Force arrows are generated in `forceAnnotation.ts` and drawn in `renderer.ts`.
+
+Their visual rules are:
+
+```text
+force arrow: solid, fixed display length of 3 world-render units
+initial velocity arrow: dashed, display length of 2.5 world-render units
+```
+
+The force-arrow length is presentational. It is not a force-to-distance conversion and is deliberately not unboundedly proportional to magnitude.
+
+An isolated arrow begins at the rendered centre corresponding to the mathematical particle point. When two or more individual forces point in the same direction, their visual origins are spread symmetrically perpendicular to that direction so the shafts remain distinguishable. Every visual offset stays inside the particle marker radius and has no mechanical meaning. Rendered radius does not affect force direction, contact, resultant calculation, or the mathematical application point.
+
+### 13.2 Weight arrow
+
+Weight is drawn vertically downward in world space with a magnitude label in newtons. It follows mass and gravity updates automatically.
+
+### 13.3 Applied-force arrows
+
+Every non-zero applied force is drawn along its canonical world-vector direction.
+
+Annotation format follows authoritative input provenance:
+
+- a Cartesian force with two non-zero components shows a component column vector;
+- an axis-aligned Cartesian force shows only the absolute non-zero component magnitude;
+- a Polar force shows magnitude, reference direction, and angle;
+- Polar angles at multiples of 90° omit the unnecessary angle arc.
+
+Exact symbolic annotation values can expose three-decimal hover tooltips on the canvas.
+
+Changing sign or angle conventions updates annotation text and reference geometry but does not rotate the physical arrow.
+
+An active normal reaction uses the same solid-arrow language, points vertically upward from the mathematical particle point, and labels only its magnitude in newtons.
+
+### 13.4 Resultant-force view
+
+Each particle has a `Show resultant force` toggle. When enabled:
+
+- individual weight and applied-force arrows are suppressed for that particle;
+- one resultant arrow is shown in red;
+- a zero resultant produces a small red dot at the particle centre instead of an arrow, sized proportionally to the particle so it scales with zoom;
+- Cartesian mode shows resultant components or an axis-aligned scalar;
+- Polar mode shows resultant magnitude and direction.
+
+The resultant is still derived, never persisted or directly editable.
+
+### 13.5 Global visibility
+
+Scene Properties includes `Show force arrows`. It controls all force arrows and labels globally without changing the model, resultant, acceleration, or motion.
+
+Force arrows remain visible at all scene times when the global control is enabled. At `t = 0`, they coexist with the dashed initial-velocity annotation. The initial-velocity annotation is rendered after force annotations so it remains legible when they overlap.
+
+No per-force visibility system was added.
+
+## 14. Integration with analytical particle motion
+
+`calculateParticleState` now obtains acceleration from `analyseParticleForces`.
+
+For free motion at global time `t`:
+
+```text
+x(t) = x₀ + uₓt + 1/2 aₓt²
+y(t) = y₀ + uᵧt + 1/2 aᵧt²
+
+vₓ(t) = uₓ + aₓt
+vᵧ(t) = uᵧ + aᵧt
+```
+
+This remains direct analytical reconstruction. The engine does not use Euler integration and does not accumulate frame-by-frame error.
+
+The x and y accelerations may now differ between particles because they depend on each particle's mass and applied forces.
+
+Examples implemented and tested include:
+
+```text
+m = 2 kg
+applied force = (6, 0) N
+g = 9.8 m s⁻²
+
+weight = (0, −19.6) N
+resultant = (6, −19.6) N
+acceleration = (3, −9.8) m s⁻²
+```
+
+and:
+
+```text
+m = 2 kg
+applied force = (0, 10) N
+g = 9.8 m s⁻²
+
+ΣFᵧ = 10 − 19.6 = −9.6 N
+aᵧ = −4.8 m s⁻²
+```
+
+## 15. Kinematics, SUVAT, and graph integration
+
+The kinematics layer consumes acceleration without needing to know which forces produced it.
+
+### 15.1 Horizontal analysis
+
+Horizontal analysis selects its educational treatment from the actual derived acceleration:
+
+- if `|aₓ| < 1 × 10⁻¹²`, it keeps the compact constant-velocity relationship `s = vt`;
+- otherwise, it uses the full existing constant-acceleration SUVAT calculation set.
+
+This avoids duplicating a second acceleration equation engine while preserving the concise zero-acceleration display.
+
+### 15.2 Vertical analysis
+
+Vertical SUVAT uses actual `aᵧ`, not hard-coded `−g`. Upward and downward applied forces therefore change every displayed and calculated vertical value consistently.
+
+### 15.3 Kinematic phases
+
+Free flight begins at `t = 0` with force-derived acceleration. Ground contact remains the only acceleration phase boundary introduced here because all applied forces are constant and do not switch during playback.
+
+### 15.4 Motion graphs
+
+Displacement–time and velocity–time graphs use the phase's derived acceleration:
+
+```text
+a = 0:
+  displacement–time is linear
+  velocity–time is horizontal
+
+a ≠ 0:
+  displacement–time is quadratic
+  velocity–time is linear
+```
+
+Graph plans, ranges, turning points, zero crossings, exact annotations, and enlarged graph rendering all update from the new acceleration values. No acceleration–time graph was added.
+
+## 16. Force-aware analytical events
+
+The phase updates event scheduling so event times remain analytical under particle-specific constant acceleration.
+
+### 16.1 Greatest height
+
+Greatest height uses:
+
+```text
+vᵧ(t) = uᵧ + aᵧt
+
+t = −uᵧ/aᵧ
+```
+
+An event is eligible only when the particle initially moves upward in world space and has downward vertical acceleration. Zero or upward acceleration produces no finite greatest-height event.
+
+### 16.2 Ground contact
+
+Ground contact solves:
+
+```text
+y₀ + uᵧt + 1/2 aᵧt² = ground height
+```
+
+using force-derived `aᵧ`. The first valid positive root is selected. Horizontal impact position uses the simultaneously derived horizontal acceleration.
+
+### 16.3 Vertical target
+
+Height-above-ground and signed-displacement target crossings use the force-derived vertical quadratic. Candidate roots beyond an earlier enabled-ground contact are rejected.
+
+### 16.4 Particle coincidence
+
+Coincidence analysis supports different constant accelerations for different particles.
+
+Relative motion may be quadratic on both axes:
+
+```text
+Δx(t) = Δx₀ + Δuₓt + 1/2 Δaₓt²
+Δy(t) = Δy₀ + Δuᵧt + 1/2 Δaᵧt²
+```
+
+The solver splits trajectories at ground-contact boundaries, solves relative polynomials, verifies that x and y are simultaneously equal, excludes `t = 0`, groups simultaneous events, and prevents repeated triggering across continuous coincident intervals.
+
+Coincidence remains an observation and pause event. It does not apply collision response or impulses.
+
+## 17. Smooth-ground normal contact
+
+The horizontal ground now participates in the permanent force pipeline through an automatically derived normal reaction. Force analysis is split into non-contact forces first, followed by unilateral contact resolution and the final resultant used by `F = ma`.
+
+At the exact first positive contact instant, the free-flight limiting velocity and acceleration remain available for teaching calculations. After contact:
+
+```text
+y = ground height
+vᵧ = 0
+aᵧ = 0
+```
+
+Horizontal motion is not halted:
+
+```text
+x(t) continues analytically
+vₓ(t) continues analytically
+aₓ remains force-derived
+```
+
+This means a particle can move and accelerate horizontally while vertically constrained to the ground. No frictional deceleration is applied.
+
+When the non-contact vertical resultant points into the ground, the contact layer derives an upward reaction of equal magnitude, so the final vertical resultant and force-derived vertical acceleration are zero:
+
+```text
+R = -F_nonContact,y
+ΣFy = F_nonContact,y + R = 0
+```
+
+The reaction is unilateral and is never negative. At exact balance, contact may remain neutral with `R = 0`, but no zero-reaction entry is displayed. An upward non-contact resultant or upward initial velocity releases contact and produces lift-off.
+
+When active, Normal Reaction appears as an automatic, non-editable force in exact force resolution, the resultant, and solid scene-arrow rendering. It is derived during reconstruction and is never stored in `particle.appliedForces`.
+
+The Ground Properties roughness and coefficient controls remain mechanically inactive. No friction, bounce, impulse, restitution, or inclined-plane mechanics are introduced.
+
+## 18. Editing and reconstruction semantics
+
+Changing any of the following updates the current analytical scene:
+
+- mass;
+- applied-force Cartesian components;
+- applied-force magnitude or direction;
+- adding a force;
+- removing a force.
+
+These changes invalidate cached graph/event presentation and reconstruct state at the current global time. They do not numerically continue from the rendered position.
+
+Changing global gravity follows the existing scene-setting behavior and resets time to zero. It then updates weight and every force-derived acceleration.
+
+Switching editor representation or force-arrow visibility is presentation-only and does not invalidate mechanics.
+
+## 19. Accessibility and interaction details
+
+Implemented interaction support includes:
+
+- semantic buttons for adding, removing, and switching force representation;
+- hidden native checkboxes beneath diagram-style toggles;
+- explicit accessible labels for force inputs and visibility controls;
+- tab roles and selected state in Particle Properties;
+- keyboard navigation between General, Forces, and Kinematics tabs;
+- keyboard activation of force-analysis cards with Enter or Space;
+- visible focus treatment;
+- native dialog behavior for enlarged calculations;
+- restoration of prior valid values after invalid numeric input.
+
+The force UI remains compact and integrated into the existing properties-panel design rather than introducing a separate force palette or inspector system.
+
+## 20. Automated test coverage
+
+The complete repository suite currently contains **342 tests across 32 test files**.
+
+### 20.1 Focused dynamics tests
+
+The dedicated dynamics tests cover:
+
+- automatic weight for masses `0.5`, `1`, `2`, and `12.5 kg`;
+- mass-independent gravitational acceleration;
+- horizontal applied-force acceleration;
+- vertical applied-force modification of gravity;
+- multiple applied-force summation;
+- Cartesian convention-to-world conversion;
+- Polar angle-convention conversion;
+- representation switching without vector mutation;
+- switching all force editors through the shared mode;
+- Polar direction re-expression without physical rotation;
+- exact `10 N at 30°` component resolution;
+- arbitrary-angle trig preservation;
+- exact magnitude and `arctan` direction derived from components;
+- entered mass/gravity provenance in weight working;
+- exact surd and trig force resolution;
+- mixed exact sum simplification through `F = ma`.
+
+### 20.2 Physics and kinematics integration tests
+
+Integration coverage verifies:
+
+- simultaneous force-derived acceleration on both axes;
+- analytical position and velocity reconstruction;
+- continued horizontal velocity after ground contact;
+- continued horizontal acceleration while vertically constrained;
+- horizontal SUVAT promotion when `aₓ ≠ 0`;
+- compact horizontal analysis when `aₓ = 0`;
+- derived vertical acceleration in SUVAT and graph planning;
+- force-aware kinematic phases;
+- deterministic direct-time reconstruction.
+
+### 20.3 Event tests
+
+Playback and event tests verify:
+
+- greatest-height timing from actual `aᵧ`;
+- ground-contact timing from actual `aᵧ`;
+- vertical target crossings;
+- point coincidence between particles with different accelerations;
+- coincidence between horizontally moving grounded particles;
+- earliest-event grouping and continuous-interval suppression;
+- convention invariance of event timing.
+
+### 20.4 Canvas tests
+
+Force-annotation tests verify:
+
+- solid force arrows;
+- force-arrow length greater than the dashed initial-velocity arrow length;
+- label placement beyond the arrow tip;
+- world-vector direction independent of display conventions;
+- Cartesian component notation;
+- axis-aligned scalar notation;
+- authoritative input-source notation;
+- replacement of individual arrows by one red resultant;
+- resultant notation following the current force selector;
+- global presentation-toggle behavior.
+
+## 21. Acceptance status
+
+The implemented milestone satisfies the intended Basic Forces outcomes:
+
+| Area | Status | Implemented result |
+|---|---|---|
+| Particle mass | Complete | Positive editable mass with literal input provenance |
+| Automatic weight | Complete | Non-removable `(0, −mg)` contribution |
+| Multiple applied forces | Complete | Ordered add/edit/remove list per particle |
+| Cartesian force input | Complete | Signed convention-aware components |
+| Polar force input | Complete | Non-negative magnitude and convention-aware direction |
+| Mode switching | Complete | World vector preserved; representation derived |
+| Convention invariance | Complete | Display changes without physical rotation |
+| Exact Polar decomposition | Complete | Special-angle surds and arbitrary trig forms |
+| Force inspection | Complete | Weight, applied forces, resolution, and acceleration |
+| Resultant force | Complete | Derived x/y vector; optional scene arrow |
+| F = ma | Complete | Acceleration derived from resultant and mass |
+| Kinematics integration | Complete | State, phases, SUVAT, and graphs consume acceleration |
+| Horizontal acceleration | Complete | Full horizontal SUVAT when needed |
+| Analytical events | Complete | Greatest height, contact, target, and coincidence updated |
+| Force arrows | Complete | Solid fixed-length weight/applied/resultant arrows |
+| Point-particle invariant | Complete | Radius has no mechanical or force-application meaning |
+| Smooth-ground contact | Complete | Derived upward-only reaction, force balance, and lift-off |
+| Automated verification | Complete | Full test suite, typecheck, and production build pass |
+
+## 22. Deliberate non-goals and known limits
+
+The Basic Forces phase does not implement:
+
+- arbitrary surface reactions or multiple simultaneous contacts;
+- rough-surface forces;
+- static or kinetic friction;
+- inclined-plane resolution;
+- strings, tension, or pulleys;
+- springs or position-dependent forces;
+- time-dependent or velocity-dependent forces;
+- drag or air resistance;
+- impulse or momentum;
+- physical particle collisions;
+- bounce or restitution;
+- work, energy, or power;
+- rigid bodies, torque, rotation, or moments;
+- forces applied away from the particle point;
+- acceleration–time graphs;
+- current-velocity scene arrows;
+- editable resultant force;
+- custom applied-force labels;
+- a general symbolic equation rearranger or CAS.
+
+All applied forces are constant and act through the mathematical particle point. Force arrows use fixed visual length, so arrow length must not be interpreted as a direct magnitude comparison. Magnitude is communicated through the label.
+
+The shared Cartesian/Polar selector is per particle rather than per individual force. This keeps the first force editor compact while preserving each force's authoritative input provenance.
+
+## 23. Verification status
+
+As of **9 August 2026**:
+
+- all **342 automated tests pass**;
+- all **32 test files pass**;
 - TypeScript type checking passes;
 - the Vite production build passes;
-- `git diff --check` passes, with only repository line-ending notices from Git.
+- `git diff --check` passes, with only repository line-ending notices where applicable.
 
-## 27. Deliberate non-goals
+## 24. Overall assessment
 
-This phase does not add:
+The Basic Forces phase establishes the intended permanent mechanics pipeline:
 
-- forces or force arrows;
-- `F = ma` analysis;
-- work, energy, or power;
-- air resistance;
-- bounce or restitution;
-- physical particle-particle collisions;
-- rigid bodies, rotation, or moments;
-- arbitrary surfaces or inclined planes;
-- springs, strings, rods, pulleys, or constraints;
-- a computer algebra system or arbitrary equation rearranger.
+```text
+physical force contributions
+          ↓
+component-wise resultant
+          ↓
+        F = ma
+          ↓
+constant world acceleration
+          ↓
+analytical 2D kinematics
+```
 
-Particle coincidence is an observation/pause event only. It does not apply impulses or change either trajectory.
+The implementation is suitable as the first educational dynamics layer because:
 
-## 28. Overall assessment
+- weight is modeled exactly once as a force;
+- physical vectors remain independent of display conventions;
+- force resultants and acceleration are derived rather than duplicated;
+- exact mathematical provenance is reused through force working;
+- the existing analytical motion system accepts general constant acceleration;
+- graphs and pause events use the same derived mechanics;
+- force diagrams distinguish forces from initial velocity;
+- smooth-ground equilibrium is explained by the derived normal reaction;
+- the automated suite covers both isolated dynamics functions and end-to-end integration.
 
-The 2D kinematics phase now provides a coherent educational path from initial conditions to diagram, motion, exact scalar values, equation working, graphs, and analytical events.
-
-The main technical foundation is trustworthy because:
-
-- mechanics uses direct analytical reconstruction;
-- presentation conventions cannot mutate world trajectories;
-- exact display provenance is carried separately from floating-point state;
-- contact and coincidence use mathematical point geometry;
-- phase boundaries are explicit;
-- graphs and annotations reuse the same kinematic model;
-- UI dialogs enlarge by redrawing, not bitmap scaling;
-- the automated suite covers numerical, symbolic, temporal, and presentation edge cases.
-
-This leaves the project ready for a later mechanics phase without requiring the 2D kinematics architecture to be replaced.
+The project is now prepared for a later inclined-plane or friction milestone. Additional surface normals and friction contributions can extend the contact layer without replacing the analytical kinematics foundation.

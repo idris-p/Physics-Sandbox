@@ -54,9 +54,10 @@ export type AutoPauseTimeDisplay =
 
 export function getGreatestHeightPauseTimeDisplay(
   particle: Particle,
-  gravityText: string,
+  gravityText: string | null,
 ): AutoPauseTimeDisplay | null {
-  const gravity = rationalFromDecimal(gravityText);
+  if (gravityText === null) return null;
+  const gravity = rationalFromFraction(gravityText);
   const polarVelocity = createPolarVelocityComponentDisplay(
     particle,
     "y",
@@ -183,10 +184,11 @@ export function createAutoPauseTimeDisplayValue(
 
 export function getGroundContactPauseTimeDisplay(
   particle: Particle,
-  gravityText: string,
+  gravityText: string | null,
   groundHeight: number,
 ): AutoPauseTimeDisplay | null {
-  const gravity = rationalFromDecimal(gravityText);
+  if (gravityText === null) return null;
+  const gravity = rationalFromFraction(gravityText);
   const initialHeight = rationalFromDecimal(String(particle.initialPosition.y));
   const ground = rationalFromDecimal(String(groundHeight));
   if (!gravity || !initialHeight || !ground) return null;
@@ -297,13 +299,14 @@ function getSameHeightPolarGroundContactTimeDisplay(
 
 export function getVerticalTargetPauseTimeDisplay(
   particle: Particle,
-  gravityText: string,
+  gravityText: string | null,
   groundEnabled: boolean,
   groundHeight: number,
   eventTime: number,
 ): AutoPauseTimeDisplay | null {
   const velocity = getWorldVelocityRational(particle);
-  const gravity = rationalFromDecimal(gravityText);
+  if (gravityText === null) return null;
+  const gravity = rationalFromFraction(gravityText);
   const displacement = getVerticalTargetDisplacement(
     particle,
     groundEnabled,

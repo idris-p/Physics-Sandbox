@@ -27,7 +27,7 @@ describe("exact Cartesian and Polar editor conversion", () => {
     expect(conversion.polarValues.angle).toBeCloseTo(53.130102354156, 12);
   });
 
-  it("uses an exact surd when Cartesian magnitude is irrational", () => {
+  it("uses an exact surd for the speed and a simple numeric special angle", () => {
     const settings = createDefaultSettings();
     const particle = editParticleInitialVelocityComponents(
       createParticle("surd", { x: 0, y: 0 }),
@@ -38,9 +38,36 @@ describe("exact Cartesian and Polar editor conversion", () => {
 
     expect(createVelocityEditorConversion(particle, settings).polarText).toEqual({
       speed: "√(2)",
-      angle: "arctan(1)",
+      angle: "45",
     });
   });
+
+  it.each([
+    {
+      components: { x: 0.5, y: -0.5 },
+      text: { x: "0.5", y: "-0.5" },
+      angle: "-45",
+    },
+    {
+      components: { x: -1.25, y: 1.25 },
+      text: { x: "-1.25", y: "1.25" },
+      angle: "135",
+    },
+  ])(
+    "keeps a derived $angle degree angle as an ordinary value",
+    ({ components, text, angle }) => {
+      const settings = createDefaultSettings();
+      const particle = editParticleInitialVelocityComponents(
+        createParticle(`simple-${angle}`, { x: 0, y: 0 }),
+        components,
+        settings,
+        text,
+      );
+
+      expect(createVelocityEditorConversion(particle, settings).polarText.angle)
+        .toBe(angle);
+    },
+  );
 
   it("keeps the correct quadrant in an exact arctan expression", () => {
     const settings = createDefaultSettings();

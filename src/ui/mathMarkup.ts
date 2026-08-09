@@ -22,9 +22,20 @@ export type MathToken =
       exponent?: string;
     }
   | {
-      kind: "number" | "identifier" | "operator" | "text" | "space";
+      kind: "number" | "operator" | "text" | "space";
       value: string;
       exponent?: string;
+    }
+  | {
+      kind: "identifier";
+      value: string;
+      subscript?: string;
+      exponent?: string;
+    }
+  | {
+      kind: "summation";
+      value: "Σ";
+      exponent?: undefined;
     }
   | {
       kind: "function";
@@ -53,6 +64,19 @@ export function tokenizeMathText(text: string): MathToken[] {
     if (space) {
       tokens.push({ kind: "space", value: " " });
       remaining = remaining.slice(space[0].length);
+      continue;
+    }
+
+    const groupedFraction = readGroupedFraction(remaining);
+    if (groupedFraction) {
+      const exponent = readExponent(remaining.slice(groupedFraction.length));
+      tokens.push({
+        kind: "fraction",
+        numerator: groupedFraction.numerator,
+        denominator: groupedFraction.denominator,
+        exponent: exponent.value,
+      });
+      remaining = remaining.slice(groupedFraction.length + exponent.length);
       continue;
     }
 
@@ -103,15 +127,25 @@ export function tokenizeMathText(text: string): MathToken[] {
       continue;
     }
 
+    if (remaining.startsWith("Σ")) {
+      tokens.push({ kind: "summation", value: "Σ" });
+      remaining = remaining.slice(1);
+      continue;
+    }
+
     const identifier = remaining.match(/^[A-Za-z]/);
     if (identifier) {
-      const exponent = readExponent(remaining.slice(1));
-      tokens.push({
+      const subscript = remaining.slice(1).match(/^_([A-Za-z0-9])/);
+      const identifierLength = 1 + (subscript?.[0].length ?? 0);
+      const exponent = readExponent(remaining.slice(identifierLength));
+      const token: Extract<MathToken, { kind: "identifier" }> = {
         kind: "identifier",
         value: identifier[0],
         exponent: exponent.value,
-      });
-      remaining = remaining.slice(1 + exponent.length);
+      };
+      if (subscript) token.subscript = subscript[1];
+      tokens.push(token);
+      remaining = remaining.slice(identifierLength + exponent.length);
       continue;
     }
 
@@ -133,6 +167,83 @@ export function createMathExpression(text: string): Element {
   math.setAttribute("aria-label", text);
   math.append(...createMathNodes(text));
   return math;
+}
+
+export interface ForceEquationExpression {
+  element: HTMLElement;
+  finalAnswer: HTMLElement;
+}
+
+export function createForceResolutionExpression(
+  axis: "x" | "y",
+  terms: string,
+  resultant: string,
+): ForceEquationExpression {
+  return createForceEquationExpression(
+    createMathExpression(`ΣF_${axis} = ${terms} = `),
+    resultant,
+    "N",
+    `sum of forces in ${axis}, equals ${terms}, equals ${resultant} newtons`,
+  );
+}
+
+export function createForceAccelerationExpression(
+  axis: "x" | "y",
+  resultant: string,
+  mass: string,
+  acceleration: string,
+): ForceEquationExpression {
+  const math = createMathElement("math");
+  math.setAttribute("class", "suvat-math");
+  math.setAttribute(
+    "aria-label",
+    `a ${axis}, equals F ${axis} divided by m, equals ${resultant} divided by ${mass}, equals`,
+  );
+  const symbolicFraction = createMathElement("mfrac");
+  const symbolicNumerator = createMathElement("mrow");
+  symbolicNumerator.append(...createMathNodes(`F_${axis}`));
+  const symbolicDenominator = createMathElement("mrow");
+  symbolicDenominator.append(...createMathNodes("m"));
+  symbolicFraction.append(symbolicNumerator, symbolicDenominator);
+  const substitutedFraction = createMathElement("mfrac");
+  const substitutedNumerator = createMathElement("mrow");
+  substitutedNumerator.append(...createMathNodes(resultant));
+  const substitutedDenominator = createMathElement("mrow");
+  substitutedDenominator.append(...createMathNodes(mass));
+  substitutedFraction.append(substitutedNumerator, substitutedDenominator);
+  math.append(
+    ...createMathNodes(`a_${axis} = `),
+    symbolicFraction,
+    ...createMathNodes(" = "),
+    substitutedFraction,
+    ...createMathNodes(" = "),
+  );
+  return createForceEquationExpression(
+    math,
+    acceleration,
+    "m s⁻²",
+    `a ${axis}, equals F ${axis} divided by m, equals ${resultant} divided by ${mass}, equals ${acceleration} metres per second squared`,
+  );
+}
+
+function createForceEquationExpression(
+  working: Element,
+  result: string,
+  unit: string,
+  ariaLabel: string,
+): ForceEquationExpression {
+  const element = document.createElement("span");
+  element.className = "force-equation-expression";
+  element.setAttribute("aria-label", ariaLabel);
+  const finalAnswer = document.createElement("span");
+  finalAnswer.className = "force-final-answer";
+  finalAnswer.append(createMathExpression(result));
+  element.append(
+    working,
+    finalAnswer,
+    createMathExpression(` ${unit}`),
+  );
+  return { element, finalAnswer };
 }
 
 export function createMathResult(
@@ -270,18 +381,28 @@ function createTokenNode(token: MathToken): Element {
   switch (token.kind) {
     case "fraction": {
       node = createMathElement("mfrac");
-      node.append(
-        createMathElementWithText("mn", token.numerator),
-        createMathElementWithText("mn", token.denominator),
-      );
+      const numerator = createMathElement("mrow");
+      numerator.append(...createMathNodes(token.numerator));
+      const denominator = createMathElement("mrow");
+      denominator.append(...createMathNodes(token.denominator));
+      node.append(numerator, denominator);
       break;
     }
     case "number":
       node = createMathElementWithText("mn", token.value);
       break;
-    case "identifier":
+    case "identifier": {
       node = createMathElementWithText("mi", token.value, {
         mathvariant: "normal",
+      });
+      if (token.subscript) node = createSubscript(node, token.subscript);
+      break;
+    }
+    case "summation":
+      node = createMathElementWithText("mo", token.value, {
+        class: "summation-symbol",
+        lspace: "0",
+        rspace: "0",
       });
       break;
     case "function":
@@ -350,6 +471,19 @@ function createSuperscript(base: Element, exponent: string): Element {
   return superscript;
 }
 
+function createSubscript(base: Element, subscript: string): Element {
+  const node = createMathElement("msub");
+  node.append(
+    base,
+    createMathElementWithText(
+      /^\d$/.test(subscript) ? "mn" : "mi",
+      subscript,
+      { mathvariant: "normal" },
+    ),
+  );
+  return node;
+}
+
 function readExponent(text: string): { value?: string; length: number } {
   let value = "";
   let length = 0;
@@ -360,6 +494,27 @@ function readExponent(text: string): { value?: string; length: number } {
     length += character.length;
   }
   return { value: value || undefined, length };
+}
+
+function readGroupedFraction(
+  text: string,
+): { numerator: string; denominator: string; length: number } | null {
+  if (!text.startsWith("(")) return null;
+  let depth = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === "(") depth += 1;
+    if (text[index] !== ")") continue;
+    depth -= 1;
+    if (depth !== 0) continue;
+    const denominator = text.slice(index + 1).match(/^\/(\d+)/);
+    if (!denominator) return null;
+    return {
+      numerator: text.slice(1, index),
+      denominator: denominator[1],
+      length: index + 1 + denominator[0].length,
+    };
+  }
+  return null;
 }
 
 function normaliseOperator(operator: string): string {

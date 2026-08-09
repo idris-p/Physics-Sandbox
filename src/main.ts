@@ -21,11 +21,11 @@ import {
 } from "./kinematics/suvat";
 import {
   addRationals,
+  absoluteDisplayValue,
   convertEnteredScalarText,
   derivedValue,
   enteredDecimal,
   formatWorkingValue,
-  negateEnteredDecimal,
   rationalFromDecimal,
   subtractRationals,
   type DisplayValue,
@@ -35,7 +35,7 @@ import {
   determineActiveKinematicPhase,
   type KinematicPhase,
 } from "./kinematics/kinematicPhase";
-import { calculateHorizontalEquationResults } from "./kinematics/horizontalKinematics";
+import { calculateHorizontalAnalysisEquationResults } from "./kinematics/horizontalKinematics";
 import { calculateParticleKinematicState2D } from "./kinematics/particleKinematics2D";
 import { createPolarVelocityComponentDisplay } from "./kinematics/polarVelocityExact";
 import {
@@ -48,12 +48,25 @@ import {
 } from "./kinematics/motionGraphs";
 import { scalarToWorldVertical } from "./kinematics/signConvention";
 import { createVelocityEditorConversion } from "./kinematics/velocityEditorConversion";
+import {
+  analyseNonContactForces,
+} from "./dynamics/forceAnalysis";
+import { analyseGroundContactForces } from "./dynamics/groundContact";
+import { createParticleForceDisplay } from "./dynamics/forceDisplay";
+import { createAppliedForceEditorConversion } from "./dynamics/appliedForceEditorConversion";
+import {
+  editAppliedForceComponents,
+  editAppliedForceMagnitudeDirection,
+  reexpressAppliedForceDirection,
+  setAppliedForcesInputMode,
+} from "./dynamics/editAppliedForce";
+import { createAppliedForce, type AppliedForce } from "./model/AppliedForce";
 import { createParticle } from "./model/Particle";
 import type { ParticleState } from "./model/Particle";
 import { createScene } from "./model/Scene";
 import { calculateSceneState } from "./physics/calculateSceneState";
 import {
-  calculateGroundImpactTime,
+  calculateGroundImpactTimeWithAcceleration,
   isAtPositiveGroundImpact,
 } from "./physics/calculateParticleState";
 import {
@@ -105,6 +118,7 @@ let greatestHeightPauseEvent: GreatestHeightPauseEvent | null = null;
 let verticalTargetPauseEvent: VerticalTargetPauseEvent | null = null;
 let autoPauseTimeDisplay: AutoPauseTimeDisplay | null = null;
 let nextParticleId = 1;
+let nextAppliedForceId = 1;
 let canvasExactValueHoverTargets: CanvasExactValueHoverTarget[] = [];
 let motionGraphPlanLock: { particleId: string; plan: MotionGraphPlan } | null = null;
 
@@ -128,17 +142,79 @@ const controls = createControls({
     resetTime();
     updateUi();
   },
+  onShowForceArrowsChange: (visible) => {
+    scene.showForceArrows = visible;
+  },
   onGravityChange: (gravity, enteredText) => {
     scene.settings.gravity = gravity;
     scene.settings.gravityInput = enteredText;
     resetTime();
   },
-  onParticleMassChange: (mass) => {
-    const particle = scene.particles.find(
-      (candidate) => candidate.id === selectedParticleId,
-    );
-    if (particle) particle.mass = mass;
+  onParticleMassChange: (mass, enteredText) => {
+    const particle = getSelectedParticle();
+    if (particle) {
+      particle.mass = mass;
+      particle.massInput = enteredText;
+    }
+    invalidateParticleAnalysisEvents();
     updateUi();
+  },
+  onAddAppliedForce: () => {
+    const particle = getSelectedParticle();
+    if (!particle) return;
+    particle.appliedForces.push(createAppliedForce(
+      `force-${nextAppliedForceId}`,
+      particle.appliedForceEditorMode,
+    ));
+    nextAppliedForceId += 1;
+    invalidateParticleAnalysisEvents();
+    updateUi();
+  },
+  onShowResultantForceChange: (enabled) => {
+    const particle = getSelectedParticle();
+    if (!particle) return;
+    particle.showResultantForce = enabled;
+    updateUi();
+  },
+  onRemoveAppliedForce: (forceId) => {
+    const particle = getSelectedParticle();
+    if (!particle) return;
+    particle.appliedForces = particle.appliedForces.filter(
+      (force) => force.id !== forceId,
+    );
+    invalidateParticleAnalysisEvents();
+    updateUi();
+  },
+  onAppliedForceModeChange: (mode) => {
+    const particle = getSelectedParticle();
+    if (!particle || particle.appliedForceEditorMode === mode) return;
+    particle.appliedForceEditorMode = mode;
+    particle.appliedForces = setAppliedForcesInputMode(
+      particle.appliedForces,
+      mode,
+    );
+    updateUi();
+  },
+  onAppliedForceComponentsChange: (forceId, vector, enteredText) => {
+    updateSelectedAppliedForce(forceId, (force) =>
+      editAppliedForceComponents(force, vector, scene.settings, enteredText)
+    );
+  },
+  onAppliedForceMagnitudeDirectionChange: (
+    forceId,
+    magnitude,
+    angle,
+    enteredText,
+  ) => {
+    updateSelectedAppliedForce(forceId, (force) =>
+      editAppliedForceMagnitudeDirection(
+        force,
+        magnitude,
+        angle,
+        scene.settings,
+        enteredText,
+      )
+    );
   },
   onParticleInitialVelocityComponentsChange: (velocity, enteredText) => {
     const particleIndex = scene.particles.findIndex(
@@ -266,9 +342,12 @@ const controls = createControls({
       angleReferenceAxis: referenceAxis,
       angleDirection: direction,
     };
-    scene.particles = scene.particles.map((particle) =>
-      reexpressParticleInitialVelocityAngle(particle, convention)
-    );
+    scene.particles = scene.particles.map((particle) => ({
+      ...reexpressParticleInitialVelocityAngle(particle, convention),
+      appliedForces: particle.appliedForces.map((force) =>
+        reexpressAppliedForceDirection(force, convention)
+      ),
+    }));
     scene.settings.angleReferenceAxis = referenceAxis;
     scene.settings.angleDirection = direction;
     motionGraphPlanLock = null;
@@ -310,6 +389,32 @@ const controls = createControls({
     controls.setZoom(camera.pixelsPerMetre);
   },
 });
+
+function getSelectedParticle() {
+  return scene.particles.find(
+    (particle) => particle.id === selectedParticleId,
+  );
+}
+
+function invalidateParticleAnalysisEvents(): void {
+  greatestHeightPauseEvent = null;
+  verticalTargetPauseEvent = null;
+  autoPauseTimeDisplay = null;
+  motionGraphPlanLock = null;
+}
+
+function updateSelectedAppliedForce(
+  forceId: string,
+  update: (force: AppliedForce) => AppliedForce,
+): void {
+  const particle = getSelectedParticle();
+  if (!particle) return;
+  particle.appliedForces = particle.appliedForces.map((force) =>
+    force.id === forceId ? update(force) : force
+  );
+  invalidateParticleAnalysisEvents();
+  updateUi();
+}
 
 const canvasExactTooltipElement = document.getElementById("canvas-exact-tooltip");
 if (!canvasExactTooltipElement) {
@@ -600,7 +705,7 @@ function renderFrame(timestamp: number): void {
         scene.groundHeight,
         scene.particles,
         activeParticleStates,
-        scene.settings.gravityInput,
+        getDownwardAccelerationText,
       ),
       ...getVerticalTargetMeasurements(
         verticalTargetPauseEvent,
@@ -715,7 +820,7 @@ function getTriggeredAutoPauseTimeDisplay(
     return particle
       ? getGreatestHeightPauseTimeDisplay(
           particle,
-          scene.settings.gravityInput,
+          getDownwardAccelerationText(particle),
         )
       : null;
   }
@@ -727,7 +832,7 @@ function getTriggeredAutoPauseTimeDisplay(
     return particle
       ? getGroundContactPauseTimeDisplay(
           particle,
-          scene.settings.gravityInput,
+          getDownwardAccelerationText(particle),
           scene.groundHeight,
         )
       : null;
@@ -740,7 +845,7 @@ function getTriggeredAutoPauseTimeDisplay(
     return particle
       ? getVerticalTargetPauseTimeDisplay(
           particle,
-          scene.settings.gravityInput,
+          getDownwardAccelerationText(particle),
           scene.groundEnabled,
           scene.groundHeight,
           pauseTime,
@@ -756,10 +861,10 @@ function refreshCurrentAutoPauseTimeDisplay(): void {
   const groundContactIds = scene.groundEnabled
     ? scene.particles.flatMap((particle) => {
         if (!particle.pauseAtGroundContact) return [];
-        const impactTime = calculateGroundImpactTime(
+        const impactTime = calculateGroundImpactTimeWithAcceleration(
           particle.initialPosition.y,
           particle.initialVelocity.y,
-          scene.settings.gravity,
+          analyseNonContactForces(particle, scene.settings.gravity).acceleration.y,
           scene.groundHeight,
         );
         return impactTime !== null && sameTime(currentTime, impactTime)
@@ -811,11 +916,26 @@ function createParticleSelectionProperties(
     particle,
     scene.settings,
   );
-  const phase = determineActiveKinematicPhase(particle, currentTime, {
+  const physicsEnvironment = {
     gravity: scene.settings.gravity,
     groundEnabled: scene.groundEnabled,
     groundHeight: scene.groundHeight,
-  });
+  };
+  const contactAnalysis = analyseGroundContactForces(
+    particle,
+    currentTime,
+    physicsEnvironment,
+  );
+  const forceDisplay = createParticleForceDisplay(
+    particle,
+    scene.settings,
+    contactAnalysis.contact.normalReactionMagnitude,
+  );
+  const phase = determineActiveKinematicPhase(
+    particle,
+    currentTime,
+    physicsEnvironment,
+  );
   const kinematics = calculateParticleKinematicState2D(
     phase,
     particleState,
@@ -829,10 +949,12 @@ function createParticleSelectionProperties(
     autoPauseTimeDisplay !== null
       ? createAutoPauseTimeDisplayValue(currentTime, autoPauseTimeDisplay)
       : undefined;
-  const horizontalPolarVelocity = phase.kind === "free-flight"
+  const horizontalPolarVelocity =
+    phase.kind === "free-flight" && phase.startTime === 0
     ? createPolarVelocityComponentDisplay(particle, "x", scene.settings)
     : undefined;
-  const verticalPolarVelocity = phase.kind === "free-flight"
+  const verticalPolarVelocity =
+    phase.kind === "free-flight" && phase.startTime === 0
     ? createPolarVelocityComponentDisplay(particle, "y", scene.settings)
     : undefined;
   const verticalEnteredValues = {
@@ -841,24 +963,29 @@ function createParticleSelectionProperties(
       kinematics.y.s,
     ),
     u:
-      phase.kind === "free-flight" && particle.initialVelocitySource === "components"
+      phase.kind === "free-flight" &&
+        phase.startTime === 0 &&
+        particle.initialVelocitySource === "components"
         ? getInitialVelocityEnteredText(particle, "y")
         : undefined,
     uDisplay: verticalPolarVelocity,
-    a:
-      phase.kind === "free-flight"
-        ? getGravityEnteredText(kinematics.y.a)
-        : undefined,
+    aDisplay: phase.kind === "free-flight"
+      ? forceDisplay.acceleration.y
+      : undefined,
     t: sharedEnteredTime,
     tDisplay: sharedExactTime,
   };
   const horizontalEnteredValues = {
     u:
-      phase.kind === "free-flight" && particle.initialVelocitySource === "components"
+      phase.kind === "free-flight" &&
+        phase.startTime === 0 &&
+        particle.initialVelocitySource === "components"
         ? getInitialVelocityEnteredText(particle, "x")
         : undefined,
     uDisplay: horizontalPolarVelocity,
-    a: phase.kind === "free-flight" ? "0" : undefined,
+    aDisplay: phase.kind === "free-flight"
+      ? forceDisplay.acceleration.x
+      : undefined,
     t: sharedEnteredTime,
     tDisplay: sharedExactTime,
   };
@@ -866,7 +993,7 @@ function createParticleSelectionProperties(
     kinematics.x,
     horizontalEnteredValues,
   );
-  if (phase.kind === "free-flight") {
+  if (phase.kind === "free-flight" && Math.abs(kinematics.x.a) < 1e-12) {
     if (horizontalEnteredValues.uDisplay !== undefined) {
       horizontalDisplayValues.v = formatWorkingValue(horizontalEnteredValues.uDisplay);
     } else if (horizontalEnteredValues.u !== undefined) {
@@ -877,18 +1004,14 @@ function createParticleSelectionProperties(
     x: {
       initialVelocity: horizontalEnteredValues.uDisplay ??
         createGraphInputDisplay(kinematics.x.u, horizontalEnteredValues.u),
-      acceleration: createGraphInputDisplay(
-        kinematics.x.a,
-        horizontalEnteredValues.a,
-      ),
+      acceleration: horizontalEnteredValues.aDisplay ??
+        createGraphInputDisplay(kinematics.x.a),
     },
     y: {
       initialVelocity: verticalEnteredValues.uDisplay ??
         createGraphInputDisplay(kinematics.y.u, verticalEnteredValues.u),
-      acceleration: createGraphInputDisplay(
-        kinematics.y.a,
-        verticalEnteredValues.a,
-      ),
+      acceleration: verticalEnteredValues.aDisplay ??
+        createGraphInputDisplay(kinematics.y.a),
     },
   };
   const motionGraphPlan = getMotionGraphPlan(
@@ -901,6 +1024,14 @@ function createParticleSelectionProperties(
     type: "particle" as const,
     position: particleState.position,
     mass: particle.mass,
+    massText: particle.massInput,
+    appliedForceEditorMode: particle.appliedForceEditorMode,
+    showResultantForce: particle.showResultantForce,
+    appliedForces: particle.appliedForces.map((force) => ({
+      id: force.id,
+      ...createAppliedForceEditorConversion(force, scene.settings),
+    })),
+    forceDisplay,
     initialVelocityText: velocityEditor.componentText,
     initialVelocityValues: {
       ...velocityEditor.componentValues,
@@ -921,12 +1052,13 @@ function createParticleSelectionProperties(
           scene.settings.positiveY,
         ),
     groundEnabled: scene.groundEnabled,
+    horizontalAccelerated: Math.abs(kinematics.x.a) >= 1e-12,
     phaseNote: createPhaseIntervalNote({
       particle,
       phase,
       currentTime,
       currentTimeEnteredText,
-      gravityText: scene.settings.gravityInput,
+      gravityText: getDownwardAccelerationText(particle),
       groundHeight: scene.groundHeight,
     }),
     kinematics: {
@@ -939,7 +1071,10 @@ function createParticleSelectionProperties(
       y: createMotionGraphData(motionGraphPlan, "y", currentTime),
     },
     equations: {
-      x: calculateHorizontalEquationResults(kinematics.x, horizontalEnteredValues),
+      x: calculateHorizontalAnalysisEquationResults(
+        kinematics.x,
+        horizontalEnteredValues,
+      ),
       y: calculateSuvatEquationResults(kinematics.y, verticalEnteredValues),
     },
   };
@@ -950,10 +1085,10 @@ function getKnownVerticalDisplacementDisplay(
   displacement: number,
 ): DisplayValue | undefined {
   const impactTime = scene.groundEnabled
-    ? calculateGroundImpactTime(
+    ? calculateGroundImpactTimeWithAcceleration(
         particle.initialPosition.y,
         particle.initialVelocity.y,
-        scene.settings.gravity,
+        analyseNonContactForces(particle, scene.settings.gravity).acceleration.y,
         scene.groundHeight,
       )
     : null;
@@ -1061,6 +1196,21 @@ function createGraphInputDisplay(
     : enteredDecimal(enteredText, value);
 }
 
+function getDownwardAccelerationText(
+  particle: (typeof scene.particles)[number],
+): string | null {
+  const acceleration = analyseNonContactForces(
+    particle,
+    scene.settings.gravity,
+  ).acceleration.y;
+  if (acceleration >= 0) return null;
+  return formatWorkingValue(
+    absoluteDisplayValue(
+      createParticleForceDisplay(particle, scene.settings).acceleration.y,
+    ),
+  );
+}
+
 function getInitialVelocityEnteredText(
   particle: (typeof scene.particles)[number],
   axis: "x" | "y",
@@ -1078,18 +1228,6 @@ function getInitialVelocityEnteredText(
     particle.initialVelocityInput.y.positiveDirection,
     scene.settings.positiveY,
   );
-}
-
-function getGravityEnteredText(acceleration: number): string | undefined {
-  const gravityAcceleration =
-    scene.settings.positiveY === "up"
-      ? -scene.settings.gravity
-      : scene.settings.gravity;
-  if (Math.abs(acceleration - gravityAcceleration) > 1e-12) return undefined;
-
-  return gravityAcceleration < 0
-    ? negateEnteredDecimal(scene.settings.gravityInput)
-    : scene.settings.gravityInput;
 }
 
 function calculateActiveParticleStates(): ParticleState[] {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createParticle } from "../model/Particle";
+import { createAppliedForce } from "../model/AppliedForce";
 import { calculateParticleState } from "./calculateParticleState";
 
 const particle = createParticle("particle-1", { x: 4, y: 10 });
@@ -64,7 +65,27 @@ describe("calculateParticleState", () => {
     expect(state.acceleration).toEqual({ x: 0, y: -9.8 });
   });
 
-  it("uses the free-fall boundary state at impact, then rests after impact", () => {
+  it("uses applied forces for analytical acceleration on both axes", () => {
+    const forced = createParticle("forced", { x: 1, y: 10 });
+    forced.mass = 2;
+    forced.appliedForces = [{
+      ...createAppliedForce("push"),
+      vector: { x: 6, y: 10 },
+    }];
+
+    const state = calculateParticleState(forced, 2, {
+      gravity: 9.8,
+      groundEnabled: false,
+    });
+
+    expect(state.acceleration.x).toBe(3);
+    expect(state.acceleration.y).toBeCloseTo(-4.8, 12);
+    expect(state.position.x).toBe(7);
+    expect(state.position.y).toBeCloseTo(0.4, 12);
+    expect(state.velocity).toEqual({ x: 6, y: -9.600000000000001 });
+  });
+
+  it("stops vertically at impact while horizontal motion continues", () => {
     const movingParticle = createParticle("moving-impact", { x: 4, y: 10 });
     movingParticle.initialVelocity.x = 3;
     const impactTime = Math.sqrt((2 * 10) / 9.8);
@@ -72,7 +93,8 @@ describe("calculateParticleState", () => {
       gravity: 9.8,
       groundEnabled: true,
     });
-    const afterImpact = calculateParticleState(movingParticle, impactTime + 0.01, {
+    const afterImpactTime = impactTime + 0.01;
+    const afterImpact = calculateParticleState(movingParticle, afterImpactTime, {
       gravity: 9.8,
       groundEnabled: true,
     });
@@ -83,10 +105,30 @@ describe("calculateParticleState", () => {
     expect(atImpact.velocity.y).toBeCloseTo(-9.8 * impactTime, 12);
     expect(atImpact.acceleration.y).toBe(-9.8);
     expect(afterImpact.position.y).toBe(0);
-    expect(afterImpact.position.x).toBeCloseTo(4 + 3 * impactTime, 12);
-    expect(afterImpact.velocity.x).toBe(0);
+    expect(afterImpact.position.x).toBeCloseTo(4 + 3 * afterImpactTime, 12);
+    expect(afterImpact.velocity.x).toBe(3);
     expect(afterImpact.velocity.y).toBe(0);
+    expect(afterImpact.acceleration.x).toBe(0);
     expect(afterImpact.acceleration.y).toBe(0);
+  });
+
+  it("preserves horizontal acceleration while vertically constrained", () => {
+    const moving = createParticle("ground-force", { x: 1, y: 0 });
+    moving.mass = 2;
+    moving.initialVelocity.x = 3;
+    moving.appliedForces = [{
+      ...createAppliedForce("push"),
+      vector: { x: 4, y: 0 },
+    }];
+
+    const state = calculateParticleState(moving, 2, {
+      gravity: 9.8,
+      groundEnabled: true,
+    });
+
+    expect(state.position).toEqual({ x: 11, y: 0 });
+    expect(state.velocity).toEqual({ x: 7, y: 0 });
+    expect(state.acceleration).toEqual({ x: 2, y: 0 });
   });
 
   it("uses a configured ground height for collision", () => {
@@ -142,7 +184,8 @@ describe("calculateParticleState", () => {
     expect(ascending.position.x).toBeCloseTo(0.5, 12);
     expect(ascending.velocity.y).toBeCloseTo(2.55, 12);
     expect(returned.position.y).toBe(0);
-    expect(returned.position.x).toBeCloseTo(2 * (2 * 5 / 9.8), 12);
+    expect(returned.position.x).toBeCloseTo(2 * (2 * 5 / 9.8 + 0.01), 12);
+    expect(returned.velocity.x).toBe(2);
     expect(returned.velocity.y).toBe(0);
   });
 

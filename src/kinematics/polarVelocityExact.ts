@@ -37,15 +37,40 @@ export function createPolarVelocityComponentDisplay(
   const input = particle.initialVelocityAngleInput;
   if (particle.initialVelocitySource !== "angle" || !input) return undefined;
 
+  return createPolarVectorComponentDisplay(
+    particle.initialVelocity,
+    {
+      magnitudeText: input.speedText,
+      angleText: input.angleText,
+      angleReferenceAxis: input.angleReferenceAxis,
+      angleDirection: input.angleDirection,
+    },
+    axis,
+    convention,
+  );
+}
+
+export function createPolarVectorComponentDisplay(
+  vector: { x: number; y: number },
+  input: {
+    magnitudeText: string;
+    angleText: string;
+    angleReferenceAxis: AngleReferenceAxis;
+    angleDirection: AngleDirection;
+  },
+  axis: Axis,
+  convention: CoordinateConvention,
+): DisplayValue | undefined {
+
   const mapping = getComponentTrigMapping(input.angleReferenceAxis, input.angleDirection, axis);
   const displayDirectionSign: 1 | -1 = axis === "x"
     ? convention.positiveX === "right" ? 1 : -1
     : convention.positiveY === "up" ? 1 : -1;
   const sign: 1 | -1 = mapping.sign === displayDirectionSign ? 1 : -1;
   const numericValue = axis === "x"
-    ? worldHorizontalToScalar(particle.initialVelocity.x, convention.positiveX)
-    : worldVerticalToScalar(particle.initialVelocity.y, convention.positiveY);
-  const speed = rationalFromDecimal(input.speedText);
+    ? worldHorizontalToScalar(vector.x, convention.positiveX)
+    : worldVerticalToScalar(vector.y, convention.positiveY);
+  const speed = rationalFromDecimal(input.magnitudeText);
   if (!speed) return undefined;
 
   const trig = getKnownExactTrigValue(mapping.functionName, Number(input.angleText));

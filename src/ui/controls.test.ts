@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  clearSoleZeroInputValue,
+  defaultBlankInputValue,
   formatPlaybackTime,
   formatTime,
   getExactInitialVelocityFields,
@@ -14,6 +16,21 @@ import {
   usesCompactKinematicText,
 } from "./controls";
 import { derivedValue, exactTrigValue } from "../kinematics/exactDisplay";
+
+describe("numeric input zero editing", () => {
+  it("clears only an input whose complete value is zero", () => {
+    expect(clearSoleZeroInputValue("0")).toBe("");
+    expect(clearSoleZeroInputValue(" 0 ")).toBe("");
+    expect(clearSoleZeroInputValue("0.0")).toBe("0.0");
+    expect(clearSoleZeroInputValue("10")).toBe("10");
+  });
+
+  it("defaults blank input text to zero without changing other values", () => {
+    expect(defaultBlankInputValue("")).toBe("0");
+    expect(defaultBlankInputValue("   ")).toBe("0");
+    expect(defaultBlankInputValue("-2.5")).toBe("-2.5");
+  });
+});
 
 describe("parseGravity", () => {
   it.each(["9.8", "9.81", "1.625", "0", ".125"])("accepts %s", (value) => {

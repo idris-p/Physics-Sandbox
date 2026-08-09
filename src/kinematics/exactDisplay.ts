@@ -19,11 +19,21 @@ export interface ExactTrigMonomial {
   factors: ExactTrigFactor[];
 }
 
+export type ExactAlgebraicTerm =
+  | { kind: "rational"; value: Rational }
+  | { kind: "surd"; value: RationalSurd }
+  | { kind: "trig"; value: ExactTrigMonomial };
+
+export interface ExactAlgebraicSum {
+  terms: ExactAlgebraicTerm[];
+}
+
 export interface DisplayValue {
   value: number;
   exact?: Rational;
   exactSurd?: RationalSurd;
   exactTrig?: ExactTrigMonomial;
+  exactSum?: ExactAlgebraicSum;
   enteredText?: string;
   exactText?: string;
 }
@@ -134,6 +144,16 @@ export function absoluteDisplayValue(value: DisplayValue): DisplayValue {
       value.exactTrig.factors,
     );
   }
+  if (value.exactSum) {
+    const negated = multiplyExactAlgebraicValues(
+      { kind: "sum", value: value.exactSum },
+      {
+        kind: "rational",
+        value: { numerator: -1n, denominator: 1n },
+      },
+    );
+    if (negated) return displayValueFromExactAlgebraic(magnitude, negated);
+  }
   if (value.enteredText !== undefined) {
     return enteredDecimal(negateEnteredDecimal(value.enteredText), magnitude);
   }
@@ -166,6 +186,34 @@ export function multiplyDisplayValues(
     return exactExpression(
       value,
       factors.map((factor) => `(${formatWorkingValue(factor)})`).join(""),
+    );
+  }
+  return derivedValue(value);
+}
+
+export function divideDisplayValues(
+  value: number,
+  numerator: DisplayValue,
+  denominator: DisplayValue,
+): DisplayValue {
+  if (denominator.value === 0) {
+    throw new Error("Cannot divide an exact display value by zero.");
+  }
+  const denominatorExact = denominator.exact;
+  if (denominatorExact) {
+    return multiplyDisplayValues(
+      value,
+      numerator,
+      derivedValue(1 / denominator.value, {
+        numerator: denominatorExact.denominator,
+        denominator: denominatorExact.numerator,
+      }),
+    );
+  }
+  if (hasExactDisplay(numerator) && hasExactDisplay(denominator)) {
+    return exactExpression(
+      value,
+      `(${formatWorkingValue(numerator)})/(${formatWorkingValue(denominator)})`,
     );
   }
   return derivedValue(value);
@@ -237,6 +285,14 @@ export function rationalFromDecimal(text: string): Rational | undefined {
   );
 }
 
+export function rationalFromText(text: string): Rational | undefined {
+  const decimal = rationalFromDecimal(text);
+  if (decimal) return decimal;
+  const match = text.trim().match(/^(-?\d+)\/(\d+)$/);
+  if (!match || BigInt(match[2]) === 0n) return undefined;
+  return normaliseRational(BigInt(match[1]), BigInt(match[2]));
+}
+
 export function addRationals(left: Rational, right: Rational): Rational {
   return normaliseRational(
     left.numerator * right.denominator + right.numerator * left.denominator,
@@ -289,6 +345,8 @@ export function formatWorkingValue(value: DisplayValue): string {
 
   if (value.exactTrig) return formatExactTrigMonomial(value.exactTrig);
 
+  if (value.exactSum) return formatExactAlgebraicSum(value.exactSum);
+
   if (value.exactText !== undefined) return value.exactText;
 
   return formatGeneratedDecimal(value.value);
@@ -329,6 +387,13 @@ export function formatFinalValue(value: DisplayValue): FinalValueDisplay[] {
   if (value.exactTrig) {
     return [
       { value: formatExactTrigMonomial(value.exactTrig), rounded: false },
+      { value: formatFixedApproximation(value.value, 3), rounded: true },
+    ];
+  }
+
+  if (value.exactSum) {
+    return [
+      { value: formatExactAlgebraicSum(value.exactSum), rounded: false },
       { value: formatFixedApproximation(value.value, 3), rounded: true },
     ];
   }
@@ -416,15 +481,15 @@ function hasExactDisplay(value: DisplayValue): boolean {
     value.exact !== undefined ||
     value.exactSurd !== undefined ||
     value.exactTrig !== undefined ||
+    value.exactSum !== undefined ||
     value.enteredText !== undefined ||
     value.exactText !== undefined
   );
 }
 
 type ExactAlgebraicValue =
-  | { kind: "rational"; value: Rational }
-  | { kind: "surd"; value: RationalSurd }
-  | { kind: "trig"; value: ExactTrigMonomial };
+  | ExactAlgebraicTerm
+  | { kind: "sum"; value: ExactAlgebraicSum };
 
 function getExactAlgebraicValue(
   value: DisplayValue,
@@ -432,6 +497,7 @@ function getExactAlgebraicValue(
   if (value.exact) return { kind: "rational", value: value.exact };
   if (value.exactSurd) return { kind: "surd", value: value.exactSurd };
   if (value.exactTrig) return { kind: "trig", value: value.exactTrig };
+  if (value.exactSum) return { kind: "sum", value: value.exactSum };
   return undefined;
 }
 
@@ -439,25 +505,47 @@ function displayValueFromExactAlgebraic(
   value: number,
   exact: ExactAlgebraicValue,
 ): DisplayValue {
-  return exact.kind === "rational"
-    ? derivedValue(value, exact.value)
-    : exact.kind === "surd"
-      ? {
-        value,
-        exactSurd: exact.value,
-        exactText: formatRationalSurd(exact.value),
-      }
-      : exactTrigMonomialValue(
-          value,
-          exact.value.coefficient,
-          exact.value.factors,
-        );
+  if (exact.kind === "rational") return derivedValue(value, exact.value);
+  if (exact.kind === "surd") {
+    return {
+      value,
+      exactSurd: exact.value,
+      exactText: formatRationalSurd(exact.value),
+    };
+  }
+  if (exact.kind === "trig") {
+    return exactTrigMonomialValue(
+      value,
+      exact.value.coefficient,
+      exact.value.factors,
+    );
+  }
+  return {
+    value,
+    exactSum: exact.value,
+    exactText: formatExactAlgebraicSum(exact.value),
+  };
 }
 
 function multiplyExactAlgebraicValues(
   left: ExactAlgebraicValue,
   right: ExactAlgebraicValue,
 ): ExactAlgebraicValue | undefined {
+  const products: ExactAlgebraicTerm[] = [];
+  for (const leftTerm of getExactAlgebraicTerms(left)) {
+    for (const rightTerm of getExactAlgebraicTerms(right)) {
+      const product = multiplyExactAlgebraicTerms(leftTerm, rightTerm);
+      if (!product) return undefined;
+      products.push(product);
+    }
+  }
+  return normaliseExactAlgebraicTerms(products);
+}
+
+function multiplyExactAlgebraicTerms(
+  left: ExactAlgebraicTerm,
+  right: ExactAlgebraicTerm,
+): ExactAlgebraicTerm | undefined {
   if (left.kind === "rational" && right.kind === "rational") {
     return { kind: "rational", value: multiplyRationals(left.value, right.value) };
   }
@@ -518,38 +606,91 @@ function addExactAlgebraicValues(
   right: ExactAlgebraicValue | undefined,
 ): ExactAlgebraicValue | undefined {
   if (!left || !right) return undefined;
-  if (left.kind === "rational" && right.kind === "rational") {
-    return { kind: "rational", value: addRationals(left.value, right.value) };
+  return normaliseExactAlgebraicTerms([
+    ...getExactAlgebraicTerms(left),
+    ...getExactAlgebraicTerms(right),
+  ]);
+}
+
+function getExactAlgebraicTerms(
+  value: ExactAlgebraicValue,
+): ExactAlgebraicTerm[] {
+  return value.kind === "sum" ? value.value.terms : [value];
+}
+
+function normaliseExactAlgebraicTerms(
+  terms: ExactAlgebraicTerm[],
+): ExactAlgebraicValue {
+  let rational: Rational = { numerator: 0n, denominator: 1n };
+  const surds = new Map<bigint, Rational>();
+  const trigTerms = new Map<string, ExactTrigMonomial>();
+
+  for (const term of terms) {
+    if (term.kind === "rational") {
+      rational = addRationals(rational, term.value);
+      continue;
+    }
+    if (term.kind === "surd") {
+      surds.set(
+        term.value.radicand,
+        addRationals(
+          surds.get(term.value.radicand) ?? {
+            numerator: 0n,
+            denominator: 1n,
+          },
+          term.value.coefficient,
+        ),
+      );
+      continue;
+    }
+
+    const key = getTrigTermKey(term.value);
+    const existing = trigTerms.get(key);
+    trigTerms.set(key, {
+      ...term.value,
+      coefficient: addRationals(
+        existing?.coefficient ?? { numerator: 0n, denominator: 1n },
+        term.value.coefficient,
+      ),
+    });
   }
-  if (left.kind === "surd" && right.kind === "surd") {
-    if (left.value.radicand !== right.value.radicand) return undefined;
-    return simplifySurd(
-      addRationals(left.value.coefficient, right.value.coefficient),
-      left.value.radicand,
-    );
+
+  const normalised: ExactAlgebraicTerm[] = [];
+  if (rational.numerator !== 0n) {
+    normalised.push({ kind: "rational", value: rational });
   }
-  if (
-    left.kind === "trig" &&
-    right.kind === "trig" &&
-    sameTrigTerm(left.value, right.value)
-  ) {
-    const coefficient = addRationals(
-      left.value.coefficient,
-      right.value.coefficient,
-    );
-    return coefficient.numerator === 0n
-      ? { kind: "rational", value: coefficient }
-      : createExactTrigMonomial(coefficient, left.value);
+  [...surds.entries()]
+    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+    .forEach(([radicand, coefficient]) => {
+      if (coefficient.numerator !== 0n) {
+        normalised.push({
+          kind: "surd",
+          value: { coefficient, radicand },
+        });
+      }
+    });
+  [...trigTerms.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .forEach(([, term]) => {
+      if (term.coefficient.numerator !== 0n) {
+        normalised.push({ kind: "trig", value: term });
+      }
+    });
+
+  if (normalised.length === 0) {
+    return {
+      kind: "rational",
+      value: { numerator: 0n, denominator: 1n },
+    };
   }
-  if (left.kind === "rational" && left.value.numerator === 0n) return right;
-  if (right.kind === "rational" && right.value.numerator === 0n) return left;
-  return undefined;
+  if (normalised.length === 1) return normalised[0];
+  return { kind: "sum", value: { terms: normalised } };
 }
 
 function simplifySurd(
   coefficient: Rational,
   radicand: bigint,
-): ExactAlgebraicValue {
+): ExactAlgebraicTerm {
   if (radicand < 0n) throw new Error("A real surd radicand cannot be negative.");
   if (coefficient.numerator === 0n || radicand === 0n) {
     return { kind: "rational", value: { numerator: 0n, denominator: 1n } };
@@ -588,10 +729,51 @@ function formatRationalSurd(value: RationalSurd): string {
   }`;
 }
 
+function formatExactAlgebraicSum(value: ExactAlgebraicSum): string {
+  const denominator = value.terms.reduce(
+    (common, term) => leastCommonMultiple(
+      common,
+      getExactAlgebraicTermCoefficient(term).denominator,
+    ),
+    1n,
+  );
+  const numerator = value.terms.map((term, index) => {
+    const coefficient = getExactAlgebraicTermCoefficient(term);
+    const scaledNumerator =
+      coefficient.numerator * (denominator / coefficient.denominator);
+    const negative = scaledNumerator < 0n;
+    const magnitude = absoluteBigInt(scaledNumerator);
+    const body = formatExactAlgebraicTermBody(term, magnitude);
+    if (index === 0) return `${negative ? "−" : ""}${body}`;
+    return `${negative ? " − " : " + "}${body}`;
+  }).join("");
+  return denominator === 1n ? numerator : `(${numerator})/${denominator}`;
+}
+
+function getExactAlgebraicTermCoefficient(
+  term: ExactAlgebraicTerm,
+): Rational {
+  return term.kind === "rational" ? term.value : term.value.coefficient;
+}
+
+function formatExactAlgebraicTermBody(
+  term: ExactAlgebraicTerm,
+  coefficientMagnitude: bigint,
+): string {
+  if (term.kind === "rational") return String(coefficientMagnitude);
+  if (term.kind === "surd") {
+    return `${coefficientMagnitude === 1n ? "" : coefficientMagnitude}√(${term.value.radicand})`;
+  }
+  const coefficientText = coefficientMagnitude === 1n
+    ? ""
+    : `${coefficientMagnitude} `;
+  return `${coefficientText}${formatTrigFactors(term.value.factors)}`;
+}
+
 function createExactTrigMonomial(
   coefficient: Rational,
   monomial: Omit<ExactTrigMonomial, "coefficient">,
-): ExactAlgebraicValue {
+): ExactAlgebraicTerm {
   return coefficient.numerator === 0n
     ? { kind: "rational", value: coefficient }
     : { kind: "trig", value: { ...monomial, coefficient } };
@@ -613,22 +795,10 @@ function exactTrigMonomialValue(
   };
 }
 
-function sameTrigTerm(
-  left: ExactTrigMonomial,
-  right: ExactTrigMonomial,
-): boolean {
-  return (
-    left.factors.length === right.factors.length &&
-    left.factors.every((factor, index) => {
-      const other = right.factors[index];
-      return (
-        other !== undefined &&
-        factor.functionName === other.functionName &&
-        factor.angleText === other.angleText &&
-        factor.exponent === other.exponent
-      );
-    })
-  );
+function getTrigTermKey(value: ExactTrigMonomial): string {
+  return value.factors.map((factor) =>
+    `${factor.functionName}\u0000${factor.angleText}\u0000${factor.exponent}`
+  ).join("\u0001");
 }
 
 function mergeTrigFactors(
@@ -654,13 +824,16 @@ function mergeTrigFactors(
 
 function formatExactTrigMonomial(value: ExactTrigMonomial): string {
   const coefficientText = formatTrigCoefficient(value.coefficient);
-  const factors = value.factors.map((factor) => {
+  return `${coefficientText}${formatTrigFactors(value.factors)}`;
+}
+
+function formatTrigFactors(factors: ExactTrigFactor[]): string {
+  return factors.map((factor) => {
     const exponentText = factor.exponent === 1
       ? ""
       : toSuperscript(factor.exponent);
     return `${factor.functionName}${exponentText}(${factor.angleText}°)`;
-  });
-  return `${coefficientText}${factors.join(" ")}`;
+  }).join(" ");
 }
 
 function formatTrigCoefficient(value: Rational): string {
@@ -692,7 +865,8 @@ function isExactZero(value: DisplayValue): boolean {
   return (
     value.exact?.numerator === 0n ||
     value.exactSurd?.coefficient.numerator === 0n ||
-    value.exactTrig?.coefficient.numerator === 0n
+    value.exactTrig?.coefficient.numerator === 0n ||
+    value.exactSum?.terms.length === 0
   );
 }
 
@@ -812,6 +986,14 @@ function greatestCommonDivisor(left: bigint, right: bigint): bigint {
     b = remainder;
   }
   return a;
+}
+
+function leastCommonMultiple(left: bigint, right: bigint): bigint {
+  if (left === 0n || right === 0n) return 0n;
+  return absoluteBigInt(
+    (left / greatestCommonDivisor(absoluteBigInt(left), absoluteBigInt(right)))
+      * right,
+  );
 }
 
 function absoluteBigInt(value: bigint): bigint {

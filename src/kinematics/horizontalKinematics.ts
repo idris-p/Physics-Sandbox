@@ -12,6 +12,16 @@ import type {
   KinematicEquationResult,
   SuvatEnteredValues,
 } from "./suvat";
+import { calculateSuvatEquationResults } from "./suvat";
+
+export function calculateHorizontalAnalysisEquationResults(
+  state: OneDimensionalKinematicState,
+  enteredValues: SuvatEnteredValues = {},
+): KinematicEquationResult[] {
+  return Math.abs(state.a) < 1e-12
+    ? calculateHorizontalEquationResults(state, enteredValues)
+    : calculateSuvatEquationResults(state, enteredValues);
+}
 
 export function calculateHorizontalEquationResults(
   state: OneDimensionalKinematicState,

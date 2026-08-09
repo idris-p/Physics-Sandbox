@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createParticle } from "../model/Particle";
+import { createAppliedForce } from "../model/AppliedForce";
 import {
   editParticleInitialVelocityAngle,
   reexpressParticleInitialVelocityAngle,
@@ -82,6 +83,19 @@ describe("playback pausing", () => {
     expect(getNextGreatestHeightPauseTime([particle], 0, 9.8)).toBe(1);
   });
 
+  it("uses force-derived vertical acceleration for greatest height", () => {
+    const particle = createParticle("forced-height", { x: 0, y: 0 });
+    particle.mass = 2;
+    particle.initialVelocity.y = 9.6;
+    particle.pauseAtGreatestHeight = true;
+    particle.appliedForces = [{
+      ...createAppliedForce("upward"),
+      vector: { x: 0, y: 10 },
+    }];
+
+    expect(getNextGreatestHeightPauseTime([particle], 0, 9.8)).toBeCloseTo(2, 12);
+  });
+
   it("does not trigger at t = 0 or without negative acceleration", () => {
     const stationary = createParticle("stationary", { x: 0, y: 10 });
     stationary.pauseAtGreatestHeight = true;
@@ -146,6 +160,19 @@ describe("playback pausing", () => {
     expect(
       getNextGroundContactPauseEvent([later, first, second], 0, 9.8, true, 0),
     ).toEqual({ time: 1, particleIds: ["first", "second"] });
+  });
+
+  it("uses force-derived acceleration for ground contact", () => {
+    const particle = createParticle("forced-ground", { x: 0, y: 9.6 });
+    particle.mass = 2;
+    particle.pauseAtGroundContact = true;
+    particle.appliedForces = [{
+      ...createAppliedForce("upward"),
+      vector: { x: 0, y: 10 },
+    }];
+
+    expect(getNextGroundContactPauseTime([particle], 0, 9.8, true, 0))
+      .toBeCloseTo(2, 12);
   });
 
   it("does not schedule ground contact without ground or from t = 0 rest", () => {
@@ -225,6 +252,28 @@ describe("playback pausing", () => {
     expect(advancePlayback(2.49, 0.02, event?.time ?? null)).toEqual({
       time: 2.5,
       reachedScheduledPause: true,
+    });
+  });
+
+  it("finds coincidence when particles have different constant accelerations", () => {
+    const accelerating = createParticle("accelerating", { x: 0, y: 4 });
+    accelerating.pauseAtParticleCoincidence = true;
+    accelerating.appliedForces = [{
+      ...createAppliedForce("right"),
+      vector: { x: 2, y: 0 },
+    }];
+    const moving = createParticle("moving", { x: 4, y: 4 });
+    moving.initialVelocity.x = -3;
+
+    expect(getNextParticleCoincidencePauseEvent(
+      [accelerating, moving],
+      0,
+      9.8,
+      false,
+      0,
+    )).toEqual({
+      time: 1,
+      particleIds: ["accelerating", "moving"],
     });
   });
 
@@ -355,6 +404,27 @@ describe("playback pausing", () => {
         0,
       ),
     ).toBeNull();
+  });
+
+  it("finds coincidence between horizontally moving grounded particles", () => {
+    const first = createParticle("first", { x: 0, y: 0 });
+    first.initialVelocity.x = 1;
+    first.pauseAtParticleCoincidence = true;
+    const second = createParticle("second", { x: 4, y: 0 });
+    second.initialVelocity.x = -1;
+
+    expect(
+      getNextParticleCoincidencePauseEvent(
+        [first, second],
+        0,
+        9.8,
+        true,
+        0,
+      ),
+    ).toEqual({
+      time: 2,
+      particleIds: ["first", "second"],
+    });
   });
 
   it("does not turn an interval beginning at t = 0 into a later event", () => {

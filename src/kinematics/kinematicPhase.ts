@@ -2,10 +2,9 @@ import { GROUND_HEIGHT } from "../config";
 import type { Vec2 } from "../math/Vec2";
 import type { Particle } from "../model/Particle";
 import {
-  calculateGroundImpactTime,
-  isAfterGroundImpact,
   type PhysicsEnvironment,
 } from "../physics/calculateParticleState";
+import { analyseGroundContactForces } from "../dynamics/groundContact";
 
 export type KinematicPhaseKind = "free-flight" | "grounded";
 
@@ -22,36 +21,41 @@ export function determineActiveKinematicPhase(
   sceneTime: number,
   environment: PhysicsEnvironment,
 ): KinematicPhase {
-  const gravity = Math.max(0, environment.gravity);
+  const analysis = analyseGroundContactForces(particle, sceneTime, environment);
+  const acceleration = analysis.nonContact.acceleration;
   const groundHeight = environment.groundHeight ?? GROUND_HEIGHT;
   const freeFlightPhase: KinematicPhase = {
     kind: "free-flight",
     startTime: 0,
     initialPosition: { ...particle.initialPosition },
     initialVelocity: { ...particle.initialVelocity },
-    acceleration: { x: 0, y: -gravity },
+    acceleration,
   };
 
-  if (!environment.groundEnabled) return freeFlightPhase;
-
-  const impactTime = calculateGroundImpactTime(
-    particle.initialPosition.y,
-    particle.initialVelocity.y,
-    gravity,
-    groundHeight,
-  );
-  if (impactTime === null || !isAfterGroundImpact(sceneTime, impactTime)) {
+  const impactTime = analysis.contact.impactTime;
+  if (
+    impactTime === null ||
+    analysis.contact.kind === "airborne" ||
+    analysis.contact.kind === "impact"
+  ) {
     return freeFlightPhase;
   }
 
   return {
-    kind: "grounded",
+    kind:
+      analysis.contact.kind === "grounded" ? "grounded" : "free-flight",
     startTime: impactTime,
     initialPosition: {
-      x: particle.initialPosition.x + particle.initialVelocity.x * impactTime,
+      x:
+        particle.initialPosition.x +
+        particle.initialVelocity.x * impactTime +
+        0.5 * acceleration.x * impactTime ** 2,
       y: groundHeight,
     },
-    initialVelocity: { x: 0, y: 0 },
-    acceleration: { x: 0, y: 0 },
+    initialVelocity: {
+      x: particle.initialVelocity.x + acceleration.x * impactTime,
+      y: 0,
+    },
+    acceleration: analysis.acceleration,
   };
 }

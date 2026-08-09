@@ -7,6 +7,7 @@ import { getAngleReferenceDirection } from "../kinematics/angleConvention";
 export const INITIAL_VELOCITY_ARROW_LENGTH_METRES = 2.5;
 export const INITIAL_VELOCITY_ANGLE_ARC_RADIUS_METRES = Math.SQRT2;
 export const INITIAL_VELOCITY_TEXT_HEIGHT_METRES = 0.5;
+export const INITIAL_VELOCITY_COLOUR = "#aaa69d";
 
 export function calculateInitialVelocityTextSize(pixelsPerMetre: number): number {
   return INITIAL_VELOCITY_TEXT_HEIGHT_METRES * pixelsPerMetre;

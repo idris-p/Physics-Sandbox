@@ -1,5 +1,7 @@
 import type { Particle } from "../model/Particle";
-import { calculateGroundImpactTime } from "../physics/calculateParticleState";
+import { analyseNonContactForces } from "../dynamics/forceAnalysis";
+import { calculateGroundImpactTimeWithAcceleration } from "../physics/calculateParticleState";
+import type { Vec2 } from "../math/Vec2";
 
 export interface ParticleCoincidencePauseEvent {
   time: number;
@@ -77,19 +79,21 @@ function getNextPairCoincidenceTime(
   groundEnabled: boolean,
   groundHeight: number,
 ): number | null {
+  const firstAcceleration = analyseNonContactForces(first, gravity).acceleration;
+  const secondAcceleration = analyseNonContactForces(second, gravity).acceleration;
   const firstImpact = groundEnabled
-    ? calculateGroundImpactTime(
+    ? calculateGroundImpactTimeWithAcceleration(
         first.initialPosition.y,
         first.initialVelocity.y,
-        gravity,
+        firstAcceleration.y,
         groundHeight,
       )
     : null;
   const secondImpact = groundEnabled
-    ? calculateGroundImpactTime(
+    ? calculateGroundImpactTimeWithAcceleration(
         second.initialPosition.y,
         second.initialVelocity.y,
-        gravity,
+        secondAcceleration.y,
         groundHeight,
       )
     : null;
@@ -112,7 +116,7 @@ function getNextPairCoincidenceTime(
     const firstSegment = getTrajectorySegment(
       first,
       start,
-      gravity,
+      firstAcceleration,
       groundEnabled,
       groundHeight,
       firstImpact,
@@ -120,7 +124,7 @@ function getNextPairCoincidenceTime(
     const secondSegment = getTrajectorySegment(
       second,
       start,
-      gravity,
+      secondAcceleration,
       groundEnabled,
       groundHeight,
       secondImpact,
@@ -152,30 +156,53 @@ function getNextPairCoincidenceTime(
 function getTrajectorySegment(
   particle: Particle,
   intervalStart: number,
-  gravity: number,
+  acceleration: Vec2,
   groundEnabled: boolean,
   groundHeight: number,
   impactTime: number | null,
 ): TrajectorySegment {
-  const resting =
+  const afterImpact =
     groundEnabled &&
     impactTime !== null &&
     (impactTime === 0 || intervalStart > impactTime || sameInstant(intervalStart, impactTime));
 
-  if (resting) {
+  if (afterImpact && acceleration.y <= 0) {
     return {
       x: [
-        particle.initialPosition.x + particle.initialVelocity.x * impactTime,
-        0,
-        0,
+        particle.initialPosition.x,
+        particle.initialVelocity.x,
+        0.5 * acceleration.x,
       ],
       y: [groundHeight, 0, 0],
     };
   }
 
+  if (afterImpact && impactTime !== null) {
+    return {
+      x: [
+        particle.initialPosition.x,
+        particle.initialVelocity.x,
+        0.5 * acceleration.x,
+      ],
+      y: [
+        groundHeight + 0.5 * acceleration.y * impactTime ** 2,
+        -acceleration.y * impactTime,
+        0.5 * acceleration.y,
+      ],
+    };
+  }
+
   return {
-    x: [particle.initialPosition.x, particle.initialVelocity.x, 0],
-    y: [particle.initialPosition.y, particle.initialVelocity.y, -0.5 * gravity],
+    x: [
+      particle.initialPosition.x,
+      particle.initialVelocity.x,
+      0.5 * acceleration.x,
+    ],
+    y: [
+      particle.initialPosition.y,
+      particle.initialVelocity.y,
+      0.5 * acceleration.y,
+    ],
   };
 }
 

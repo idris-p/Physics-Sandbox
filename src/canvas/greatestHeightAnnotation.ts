@@ -7,6 +7,7 @@ import {
   formatWorkingValue,
   multiplyDisplayValues,
   rationalFromDecimal,
+  rationalFromText,
   subtractRationals,
   type DisplayValue,
   type SquareRootValueDisplay,
@@ -67,7 +68,7 @@ export function getGreatestHeightMeasurements(
   groundHeight: number,
   particles: Particle[],
   particleStates: ParticleState[],
-  gravityText = "9.8",
+  gravityText: string | ((particle: Particle) => string | null) = "9.8",
 ): GreatestHeightMeasurement[] {
   if (!event || !sameTime(currentTime, event.time)) return [];
 
@@ -88,11 +89,14 @@ export function getGreatestHeightMeasurements(
       particleState.position.y,
       referenceHeight,
     );
+    const particleGravityText = typeof gravityText === "function"
+      ? gravityText(particle)
+      : gravityText;
     const displayValue = calculateGreatestHeightDisplayValue(
       particle,
       groundEnabled,
       groundHeight,
-      gravityText,
+      particleGravityText,
       height,
     );
     return [
@@ -112,10 +116,10 @@ function calculateGreatestHeightDisplayValue(
   particle: Particle,
   groundEnabled: boolean,
   groundHeight: number,
-  gravityText: string,
+  gravityText: string | null,
   measuredHeight: number,
 ): DisplayValue {
-  const gravity = rationalFromDecimal(gravityText);
+  const gravity = gravityText === null ? undefined : rationalFromText(gravityText);
   if (!gravity || gravity.numerator <= 0n) {
     return exactNumericFallback(measuredHeight);
   }

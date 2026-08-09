@@ -3,6 +3,7 @@ import {
   addRationals,
   convertEnteredScalarText,
   derivedValue,
+  divideDisplayValues,
   divideRationals,
   enteredDecimal,
   exactSurdValue,
@@ -72,6 +73,38 @@ describe("exact SUVAT display values", () => {
         ),
       ),
     ).toBe("0");
+  });
+
+  it("normalises mixed rational and surd sums through later arithmetic", () => {
+    const mixed = addDisplayValues(
+      -9.8 + 5 * Math.sqrt(2),
+      enteredDecimal("-9.8", -9.8),
+      exactSurdValue(
+        5 * Math.sqrt(2),
+        { numerator: 5n, denominator: 1n },
+        2n,
+      ),
+    );
+
+    expect(formatWorkingValue(mixed)).toBe("(−49 + 25√(2))/5");
+    expect(
+      formatWorkingValue(
+        divideDisplayValues(
+          mixed.value,
+          mixed,
+          enteredDecimal("1", 1),
+        ),
+      ),
+    ).toBe("(−49 + 25√(2))/5");
+    expect(
+      formatWorkingValue(
+        divideDisplayValues(
+          mixed.value / 2,
+          mixed,
+          enteredDecimal("2", 2),
+        ),
+      ),
+    ).toBe("(−49 + 25√(2))/10");
   });
 
   it("combines powers and cancels like exact trigonometric terms", () => {

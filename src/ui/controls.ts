@@ -17,12 +17,16 @@ import type {
   AngleReferenceAxis,
 } from "../kinematics/angleConvention";
 import type { InitialVelocityInputMode } from "../model/Particle";
+import type { AppliedForceInputMode } from "../model/AppliedForce";
+import type { ParticleForceDisplay } from "../dynamics/forceDisplay";
 import {
   formatAutoPauseTimeExactText,
   type AutoPauseTimeDisplay,
 } from "../simulation/autoPauseTimeDisplay";
 import {
   createMathExpression,
+  createForceAccelerationExpression,
+  createForceResolutionExpression,
   createMathResult,
   createQuadraticSurdValue,
   createRationalSurdValue,
@@ -56,11 +60,24 @@ import type {
 
 export type PlaybackButtonState = "paused" | "playing" | "pause-pending";
 export type InitialVelocityField = "x" | "y" | "speed" | "angle";
+type ForceCalculationId = "resolve-x" | "resolve-y" | "fma";
+type ParticlePropertiesTab = "general" | "forces" | "kinematics";
 export type SelectionProperties =
   | {
       type: "particle";
       position: Vec2;
       mass: number;
+      massText: string;
+      appliedForceEditorMode: AppliedForceInputMode;
+      showResultantForce: boolean;
+      appliedForces: Array<{
+        id: string;
+        componentText: { x: string; y: string };
+        componentValues: { x: number; y: number };
+        polarText: { magnitude: string; angle: string };
+        polarValues: { magnitude: number; angle: number };
+      }>;
+      forceDisplay: ParticleForceDisplay;
       initialVelocityText: { x: string; y: string };
       initialVelocityValues: {
         x: number;
@@ -77,6 +94,7 @@ export type SelectionProperties =
       pauseAtVerticalTarget: boolean;
       verticalPauseTargetText: string;
       groundEnabled: boolean;
+      horizontalAccelerated: boolean;
       phaseNote: PhaseIntervalNote | null;
       kinematics: { x: KinematicDisplayValues; y: KinematicDisplayValues };
       kinematicValues: {
@@ -96,8 +114,24 @@ export interface ControlCallbacks {
   onToolChange: (tool: Tool) => void;
   onRemove: () => void;
   onGroundChange: (enabled: boolean) => void;
+  onShowForceArrowsChange: (visible: boolean) => void;
   onGravityChange: (gravity: number, enteredText: string) => void;
-  onParticleMassChange: (mass: number) => void;
+  onParticleMassChange: (mass: number, enteredText: string) => void;
+  onAddAppliedForce: () => void;
+  onShowResultantForceChange: (enabled: boolean) => void;
+  onRemoveAppliedForce: (forceId: string) => void;
+  onAppliedForceModeChange: (mode: AppliedForceInputMode) => void;
+  onAppliedForceComponentsChange: (
+    forceId: string,
+    vector: { x: number; y: number },
+    enteredText: { x: string; y: string },
+  ) => void;
+  onAppliedForceMagnitudeDirectionChange: (
+    forceId: string,
+    magnitude: number,
+    angle: number,
+    enteredText: { magnitude: string; angle: string },
+  ) => void;
   onParticleInitialVelocityComponentsChange: (
     velocity: { x: number; y: number },
     enteredText: { x: string; y: string },
@@ -158,6 +192,9 @@ export function createControls(callbacks: ControlCallbacks): Controls {
   const particleTool = getElement<HTMLButtonElement>("particle-tool");
   const removeParticle = getElement<HTMLButtonElement>("remove-particle");
   const groundToggle = getElement<HTMLInputElement>("ground-toggle");
+  const showForceArrowsToggle = getElement<HTMLInputElement>(
+    "show-force-arrows-toggle",
+  );
   const gravityInput = getElement<HTMLInputElement>("gravity-input");
   const gravityError = getElement<HTMLElement>("gravity-error");
   const angleReferenceAxis = getElement<HTMLSelectElement>("angle-reference-axis");
@@ -167,15 +204,53 @@ export function createControls(callbacks: ControlCallbacks): Controls {
   const particlePropertiesScroll = particleProperties.querySelector<HTMLElement>(
     ".particle-properties-scroll",
   );
-  const toggleParticleAnalysis = getElement<HTMLButtonElement>(
-    "toggle-particle-analysis",
+  const particleGeneralTab = getElement<HTMLButtonElement>(
+    "particle-tab-general",
+  );
+  const particleForcesTab = getElement<HTMLButtonElement>(
+    "particle-tab-forces",
+  );
+  const particleKinematicsTab = getElement<HTMLButtonElement>(
+    "particle-tab-kinematics",
+  );
+  const particleGeneralContent = getElement<HTMLElement>(
+    "particle-general-content",
   );
   const particleAnalysisContent = getElement<HTMLElement>(
     "particle-analysis-content",
   );
+  const particleForcesContent = getElement<HTMLElement>(
+    "particle-forces-content",
+  );
   const particlePositionX = getElement<HTMLOutputElement>("particle-position-x");
   const particlePositionY = getElement<HTMLOutputElement>("particle-position-y");
   const particleMassInput = getElement<HTMLInputElement>("particle-mass-input");
+  const particleWeightValue = getElement<HTMLOutputElement>(
+    "particle-weight-value",
+  );
+  const normalReactionRow = getElement<HTMLElement>("normal-reaction-row");
+  const particleNormalReactionValue = getElement<HTMLOutputElement>(
+    "particle-normal-reaction-value",
+  );
+  const appliedForcesList = getElement<HTMLElement>("applied-forces-list");
+  const addAppliedForce = getElement<HTMLButtonElement>("add-applied-force");
+  const showResultantForceToggle = getElement<HTMLInputElement>(
+    "show-resultant-force-toggle",
+  );
+  const appliedForceGlobalMode = getElement<HTMLElement>(
+    "applied-force-global-mode",
+  );
+  const appliedForceModeComponents = getElement<HTMLButtonElement>(
+    "applied-force-mode-components",
+  );
+  const appliedForceModePolar = getElement<HTMLButtonElement>(
+    "applied-force-mode-polar",
+  );
+  const forceResultantX = getElement<HTMLElement>("force-resultant-x");
+  const forceResultantY = getElement<HTMLElement>("force-resultant-y");
+  const forceAccelerationX = getElement<HTMLElement>("force-acceleration-x");
+  const forceAccelerationY = getElement<HTMLElement>("force-acceleration-y");
+  const forceAnalysis = getElement<HTMLElement>("force-analysis");
   const particleInitialVelocityXInput = getElement<HTMLInputElement>(
     "particle-initial-velocity-x-input",
   );
@@ -320,13 +395,49 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     throw new Error("Missing particle properties scroll region.");
   }
 
+  const getNumericTextInput = (target: EventTarget | null): HTMLInputElement | null =>
+    target instanceof HTMLInputElement &&
+    target.type === "text" &&
+    target.inputMode === "decimal"
+      ? target
+      : null;
+  const automaticallyClearedZeroInputs = new WeakSet<HTMLInputElement>();
+  const clearSoleZero = (event: Event): void => {
+    const input = getNumericTextInput(event.target);
+    if (!input || input.value.trim() !== "0") return;
+    input.value = clearSoleZeroInputValue(input.value);
+    automaticallyClearedZeroInputs.add(input);
+  };
+  document.addEventListener("pointerdown", clearSoleZero);
+  document.addEventListener("focusin", clearSoleZero);
+  document.addEventListener("input", (event) => {
+    const input = getNumericTextInput(event.target);
+    if (input) automaticallyClearedZeroInputs.delete(input);
+  });
+  document.addEventListener("change", (event) => {
+    const input = getNumericTextInput(event.target);
+    if (!input) return;
+    input.value = defaultBlankInputValue(input.value);
+    automaticallyClearedZeroInputs.delete(input);
+  }, true);
+  document.addEventListener("focusout", (event) => {
+    const input = getNumericTextInput(event.target);
+    if (!input || input.value.trim() !== "") return;
+    const wasAutomaticallyCleared = automaticallyClearedZeroInputs.has(input);
+    automaticallyClearedZeroInputs.delete(input);
+    input.value = "0";
+    if (!wasAutomaticallyCleared) {
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  });
+
   let currentGravityText = gravityInput.value;
   let currentTimeText = timeInput.value;
   let currentDisplayedTime = 0;
   let lastExactTimeDisplay: AutoPauseTimeDisplay | null = null;
   let exactTimeDisplaySuppressed = false;
   let isEditingExactTime = false;
-  let currentParticleMass = Number(particleMassInput.value);
+  let currentParticleMassText = particleMassInput.value;
   let currentParticleInitialVelocityText = {
     x: particleInitialVelocityXInput.value,
     y: particleInitialVelocityYInput.value,
@@ -358,12 +469,17 @@ export function createControls(callbacks: ControlCallbacks): Controls {
   let currentParticlePauseTargetText = particlePauseTargetInput.value;
   let currentGroundFriction = Number(groundFrictionInput.value);
   let currentTool: Tool = "select";
-  let particleAnalysisExpanded = false;
-  let particlePropertiesScrollTop = 0;
+  let selectedParticleTab: ParticlePropertiesTab = "general";
+  const particleTabScrollPositions: Record<ParticlePropertiesTab, number> = {
+    general: 0,
+    forces: 0,
+    kinematics: 0,
+  };
   let selectedKinematicAxis: "x" | "y" = "y";
   let currentParticleSelection: Extract<SelectionProperties, { type: "particle" }> | null = null;
   let currentSuvatEquations: KinematicEquationResult[] = [];
   let expandedSuvatEquationId: string | null = null;
+  let expandedForceCalculationId: ForceCalculationId | null = null;
   let expandedMotionGraphQuantity: MotionGraphQuantity | null = null;
 
   const getInitialVelocityFieldText = (field: InitialVelocityField): string =>
@@ -423,30 +539,53 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     });
   }
 
-  const setParticleAnalysisExpanded = (expanded: boolean): void => {
-    if (!expanded) particlePropertiesScrollTop = particlePropertiesScroll.scrollTop;
+  const particleTabs: Array<{
+    id: ParticlePropertiesTab;
+    button: HTMLButtonElement;
+    panel: HTMLElement;
+  }> = [
+    { id: "general", button: particleGeneralTab, panel: particleGeneralContent },
+    { id: "forces", button: particleForcesTab, panel: particleForcesContent },
+    { id: "kinematics", button: particleKinematicsTab, panel: particleAnalysisContent },
+  ];
 
-    particleAnalysisExpanded = expanded;
-    particleAnalysisContent.hidden = !expanded;
-    toggleParticleAnalysis.setAttribute("aria-expanded", String(expanded));
-    toggleParticleAnalysis.setAttribute(
-      "aria-label",
-      expanded
-        ? "Collapse kinematics and SUVAT"
-        : "Expand kinematics and SUVAT",
-    );
+  const selectParticleTab = (
+    tab: ParticlePropertiesTab,
+    moveFocus = false,
+  ): void => {
+    particleTabScrollPositions[selectedParticleTab] = particlePropertiesScroll.scrollTop;
+    selectedParticleTab = tab;
 
-    if (expanded) particlePropertiesScroll.scrollTop = particlePropertiesScrollTop;
+    for (const item of particleTabs) {
+      const active = item.id === tab;
+      item.button.classList.toggle("is-active", active);
+      item.button.setAttribute("aria-selected", String(active));
+      item.button.tabIndex = active ? 0 : -1;
+      item.panel.hidden = !active;
+    }
+
+    particlePropertiesScroll.scrollTop = particleTabScrollPositions[tab];
+    if (moveFocus) particleTabs.find((item) => item.id === tab)?.button.focus();
   };
 
-  toggleParticleAnalysis.addEventListener("click", () => {
-    setParticleAnalysisExpanded(!particleAnalysisExpanded);
+  particleTabs.forEach((item, index) => {
+    item.button.addEventListener("click", () => selectParticleTab(item.id));
+    item.button.addEventListener("keydown", (event) => {
+      let targetIndex: number | null = null;
+      if (event.key === "ArrowRight") targetIndex = (index + 1) % particleTabs.length;
+      if (event.key === "ArrowLeft") {
+        targetIndex = (index - 1 + particleTabs.length) % particleTabs.length;
+      }
+      if (event.key === "Home") targetIndex = 0;
+      if (event.key === "End") targetIndex = particleTabs.length - 1;
+      if (targetIndex === null) return;
+      event.preventDefault();
+      selectParticleTab(particleTabs[targetIndex].id, true);
+    });
   });
 
   particlePropertiesScroll.addEventListener("scroll", () => {
-    if (particleAnalysisExpanded) {
-      particlePropertiesScrollTop = particlePropertiesScroll.scrollTop;
-    }
+    particleTabScrollPositions[selectedParticleTab] = particlePropertiesScroll.scrollTop;
   });
 
   const renderSelectedKinematicComponent = (): void => {
@@ -458,12 +597,15 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     kinematicHorizontal.classList.toggle("is-active", !isVertical);
     kinematicVertical.setAttribute("aria-pressed", String(isVertical));
     kinematicHorizontal.setAttribute("aria-pressed", String(!isVertical));
-    kinematicQuantityRows.get("u")?.toggleAttribute("hidden", !isVertical);
-    kinematicQuantityRows.get("a")?.toggleAttribute("hidden", !isVertical);
-    suvatTitle.textContent = isVertical ? "SUVAT" : "Horizontal motion";
+    const usesSuvat = isVertical || selection.horizontalAccelerated;
+    kinematicQuantityRows.get("u")?.toggleAttribute("hidden", !usesSuvat);
+    kinematicQuantityRows.get("a")?.toggleAttribute("hidden", !usesSuvat);
+    suvatTitle.textContent = usesSuvat ? "SUVAT" : "Horizontal motion";
     suvatCalculationDialogTitle.textContent = isVertical
       ? "SUVAT Calculation"
-      : "Horizontal Calculation";
+      : selection.horizontalAccelerated
+        ? "Horizontal SUVAT Calculation"
+        : "Horizontal Calculation";
 
     currentSuvatEquations = selection.equations[selectedKinematicAxis];
     setPhaseIntervalNote(kinematicPhaseNote, selection.phaseNote);
@@ -479,7 +621,7 @@ export function createControls(callbacks: ControlCallbacks): Controls {
       renderExpandedMotionGraph(graph, expandedMotionGraphQuantity);
     }
     setSuvatAnalysis(suvatEquations, currentSuvatEquations);
-    refreshExpandedSuvatEquation();
+    refreshExpandedCalculation();
   };
 
   kinematicVertical.addEventListener("click", () => {
@@ -611,9 +753,14 @@ export function createControls(callbacks: ControlCallbacks): Controls {
   const closeExpandedSuvatEquation = (): void => {
     if (suvatCalculationDialog.open) suvatCalculationDialog.close();
     expandedSuvatEquationId = null;
+    expandedForceCalculationId = null;
   };
 
-  function refreshExpandedSuvatEquation(): void {
+  function refreshExpandedCalculation(): void {
+    if (expandedForceCalculationId) {
+      populateExpandedForceCalculation(expandedForceCalculationId);
+      return;
+    }
     if (!expandedSuvatEquationId) return;
     const equation = currentSuvatEquations.find(
       (candidate) => candidate.id === expandedSuvatEquationId,
@@ -632,6 +779,7 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     );
     if (!equation) return;
 
+    expandedForceCalculationId = null;
     expandedSuvatEquationId = equation.id;
     populateSuvatEquationElement(suvatCalculationDialogEquation, equation);
     if (!suvatCalculationDialog.open) suvatCalculationDialog.showModal();
@@ -668,6 +816,125 @@ export function createControls(callbacks: ControlCallbacks): Controls {
   });
   suvatCalculationDialog.addEventListener("close", () => {
     expandedSuvatEquationId = null;
+    expandedForceCalculationId = null;
+  });
+
+  function populateExpandedForceCalculation(
+    calculationId: ForceCalculationId,
+  ): void {
+    const selection = currentParticleSelection;
+    if (!selection) {
+      closeExpandedSuvatEquation();
+      return;
+    }
+    const formula = suvatCalculationDialogEquation.querySelector<HTMLElement>(
+      ".suvat-formula",
+    );
+    const substitution = suvatCalculationDialogEquation.querySelector<HTMLElement>(
+      ".suvat-substitution",
+    );
+    const result = suvatCalculationDialogEquation.querySelector<HTMLElement>(
+      ".suvat-result",
+    );
+    const squareRoot = suvatCalculationDialogEquation.querySelector<HTMLElement>(
+      ".suvat-square-root",
+    );
+    if (!formula || !substitution || !result || !squareRoot) return;
+
+    const display = selection.forceDisplay;
+    suvatCalculationDialog.classList.add("force-calculation-mode");
+    suvatCalculationDialogEquation.classList.add("force-modal-equation");
+    formula.hidden = true;
+    formula.replaceChildren();
+    squareRoot.classList.add("is-hidden");
+    squareRoot.replaceChildren();
+    suvatCalculationDialogTitle.textContent = calculationId === "resolve-x"
+      ? "Resolve horizontally"
+      : calculationId === "resolve-y"
+        ? "Resolve vertically"
+        : "F = ma";
+
+    if (calculationId === "resolve-x" || calculationId === "resolve-y") {
+      const axis = calculationId === "resolve-x" ? "x" : "y";
+      const terms = display.forces.map((force) =>
+        formatWorkingValue(force[axis])
+      );
+      const resultant = formatWorkingValue(display.resultant[axis]);
+      const expression = createForceResolutionExpression(
+        axis,
+        formatSignedTerms(terms),
+        resultant,
+      );
+      setExactValueTooltip(
+        expression.finalAnswer,
+        resultant,
+        display.resultant[axis].value,
+      );
+      substitution.replaceChildren(expression.element);
+      result.replaceChildren();
+      result.hidden = true;
+      return;
+    }
+
+    result.hidden = false;
+    const accelerationLines = (["x", "y"] as const).map((axis) => {
+      const resultant = formatWorkingValue(display.resultant[axis]);
+      const acceleration = formatWorkingValue(display.acceleration[axis]);
+      const expression = createForceAccelerationExpression(
+        axis,
+        resultant,
+        selection.massText,
+        acceleration,
+      );
+      setExactValueTooltip(
+        expression.finalAnswer,
+        acceleration,
+        display.acceleration[axis].value,
+      );
+      const line = document.createElement("span");
+      line.className = "suvat-math-line";
+      line.append(expression.element);
+      return line;
+    });
+    substitution.replaceChildren(accelerationLines[0]);
+    result.replaceChildren(accelerationLines[1]);
+  }
+
+  const openExpandedForceCalculation = (
+    calculationId: ForceCalculationId,
+  ): void => {
+    if (!currentParticleSelection) return;
+    expandedSuvatEquationId = null;
+    expandedForceCalculationId = calculationId;
+    populateExpandedForceCalculation(calculationId);
+    if (!suvatCalculationDialog.open) suvatCalculationDialog.showModal();
+    closeSuvatCalculationDialog.focus();
+  };
+
+  const getForceCalculationFromEvent = (
+    event: Event,
+  ): ForceCalculationId | null => {
+    if (!(event.target instanceof Element)) return null;
+    const calculation = event.target.closest<HTMLElement>(
+      "[data-force-calculation]",
+    );
+    if (!calculation || !forceAnalysis.contains(calculation)) return null;
+    const id = calculation.dataset.forceCalculation;
+    return id === "resolve-x" || id === "resolve-y" || id === "fma"
+      ? id
+      : null;
+  };
+
+  forceAnalysis.addEventListener("click", (event) => {
+    const calculationId = getForceCalculationFromEvent(event);
+    if (calculationId) openExpandedForceCalculation(calculationId);
+  });
+  forceAnalysis.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const calculationId = getForceCalculationFromEvent(event);
+    if (!calculationId) return;
+    event.preventDefault();
+    openExpandedForceCalculation(calculationId);
   });
 
   const setTool = (tool: Tool): void => {
@@ -687,6 +954,9 @@ export function createControls(callbacks: ControlCallbacks): Controls {
   removeParticle.addEventListener("click", callbacks.onRemove);
   groundToggle.addEventListener("change", () => {
     callbacks.onGroundChange(groundToggle.checked);
+  });
+  showForceArrowsToggle.addEventListener("change", () => {
+    callbacks.onShowForceArrowsChange(showForceArrowsToggle.checked);
   });
 
   gravityInput.addEventListener("change", () => {
@@ -709,15 +979,27 @@ export function createControls(callbacks: ControlCallbacks): Controls {
   particleMassInput.addEventListener("change", () => {
     const result = parsePositiveProperty(particleMassInput.value);
     if (result === null) {
-      particleMassInput.value = formatNumber(currentParticleMass);
+      particleMassInput.value = currentParticleMassText;
       particleMassInput.setAttribute("aria-invalid", "true");
       return;
     }
 
-    currentParticleMass = result;
-    particleMassInput.value = formatNumber(result);
+    const enteredText = particleMassInput.value.trim();
+    currentParticleMassText = enteredText;
+    particleMassInput.value = enteredText;
     particleMassInput.removeAttribute("aria-invalid");
-    callbacks.onParticleMassChange(result);
+    callbacks.onParticleMassChange(result, enteredText);
+  });
+
+  addAppliedForce.addEventListener("click", callbacks.onAddAppliedForce);
+  showResultantForceToggle.addEventListener("change", () => {
+    callbacks.onShowResultantForceChange(showResultantForceToggle.checked);
+  });
+  appliedForceModeComponents.addEventListener("click", () => {
+    callbacks.onAppliedForceModeChange("components");
+  });
+  appliedForceModePolar.addEventListener("click", () => {
+    callbacks.onAppliedForceModeChange("magnitude-direction");
   });
 
   const commitInitialVelocityComponents = (changedAxis: "x" | "y"): void => {
@@ -820,6 +1102,268 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     editingExactInitialVelocityField = null;
     callbacks.onParticleInitialVelocityModeChange("components");
   });
+
+  const createAppliedForceField = (
+    symbol: string,
+    textValue: string,
+    numericValue: number,
+    unit: string,
+    parse: (text: string) => number | null,
+    commit: (value: number, text: string) => void,
+  ): HTMLElement => {
+    const label = document.createElement("label");
+    label.className = "force-input-field";
+    const symbolElement = document.createElement("i");
+    const [baseSymbol, subscriptText] = symbol.split("_");
+    symbolElement.textContent = baseSymbol;
+    if (subscriptText) {
+      const subscript = document.createElement("sub");
+      subscript.textContent = subscriptText;
+      symbolElement.append(subscript);
+    }
+    if (symbol === "θ") symbolElement.classList.add("physics-symbol");
+    const equalsElement = document.createElement("span");
+    equalsElement.textContent = "=";
+    const field = document.createElement("span");
+    field.className = "property-number-field";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.inputMode = "decimal";
+    input.value = textValue;
+    const exactButton = document.createElement("button");
+    exactButton.type = "button";
+    exactButton.className = "force-exact-value";
+    exactButton.setAttribute("aria-label", `Edit exact ${symbol} value`);
+    const symbolic = isSymbolicExactDisplay(textValue);
+    if (symbolic) {
+      input.hidden = true;
+      exactButton.replaceChildren(createMathExpression(textValue));
+      exactButton.dataset.exactApproximation = formatExactValueTooltip(numericValue);
+      exactButton.addEventListener("click", () => {
+        exactButton.hidden = true;
+        input.hidden = false;
+        input.value = formatEditableVelocityDecimal(numericValue);
+        input.focus();
+        input.select();
+      });
+      input.addEventListener("blur", () => {
+        if (input.value === formatEditableVelocityDecimal(numericValue)) {
+          input.hidden = true;
+          exactButton.hidden = false;
+        }
+      });
+    } else {
+      exactButton.hidden = true;
+    }
+    input.addEventListener("change", () => {
+      const parsed = parse(input.value);
+      if (parsed === null) {
+        input.value = textValue;
+        input.setAttribute("aria-invalid", "true");
+        return;
+      }
+      input.removeAttribute("aria-invalid");
+      commit(parsed, input.value.trim());
+    });
+    field.append(input, exactButton);
+    const unitElement = document.createElement("span");
+    unitElement.textContent = unit;
+    label.append(symbolElement, equalsElement, field, unitElement);
+    return label;
+  };
+
+  const renderAppliedForces = (
+    selection: Extract<SelectionProperties, { type: "particle" }>,
+  ): void => {
+    const editors = selection.appliedForces.map((force, index) => {
+      const editor = document.createElement("article");
+      editor.className = "applied-force-editor";
+      const header = document.createElement("div");
+      header.className = "applied-force-header";
+      const title = document.createElement("span");
+      title.textContent = `Applied Force ${index + 1}`;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "remove-applied-force";
+      remove.setAttribute("aria-label", `Remove Applied Force ${index + 1}`);
+      const removeIcon = document.createElementNS(
+        "http://www.w3.org/2000/svg",
+        "svg",
+      );
+      removeIcon.setAttribute("viewBox", "0 0 24 24");
+      removeIcon.setAttribute("aria-hidden", "true");
+      const removeIconPath = document.createElementNS(
+        "http://www.w3.org/2000/svg",
+        "path",
+      );
+      removeIconPath.setAttribute(
+        "d",
+        "M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13M10 10v7M14 10v7",
+      );
+      removeIcon.append(removeIconPath);
+      remove.append(removeIcon);
+      remove.addEventListener("click", () => callbacks.onRemoveAppliedForce(force.id));
+      header.append(title, remove);
+
+      const fields = document.createElement("div");
+      fields.className = "force-input-fields";
+      const componentsActive = selection.appliedForceEditorMode === "components";
+      if (componentsActive) {
+        fields.append(
+          createAppliedForceField(
+            "F_x",
+            force.componentText.x,
+            force.componentValues.x,
+            "N",
+            parseSignedValue,
+            (value, text) => callbacks.onAppliedForceComponentsChange(
+              force.id,
+              { x: value, y: force.componentValues.y },
+              { x: text, y: force.componentText.y },
+            ),
+          ),
+          createAppliedForceField(
+            "F_y",
+            force.componentText.y,
+            force.componentValues.y,
+            "N",
+            parseSignedValue,
+            (value, text) => callbacks.onAppliedForceComponentsChange(
+              force.id,
+              { x: force.componentValues.x, y: value },
+              { x: force.componentText.x, y: text },
+            ),
+          ),
+        );
+      } else {
+        fields.append(
+          createAppliedForceField(
+            "F",
+            force.polarText.magnitude,
+            force.polarValues.magnitude,
+            "N",
+            parseGravity,
+            (value, text) => callbacks.onAppliedForceMagnitudeDirectionChange(
+              force.id,
+              value,
+              force.polarValues.angle,
+              { magnitude: text, angle: force.polarText.angle },
+            ),
+          ),
+          createAppliedForceField(
+            "θ",
+            force.polarText.angle,
+            force.polarValues.angle,
+            "°",
+            parseAngle,
+            (value, text) => callbacks.onAppliedForceMagnitudeDirectionChange(
+              force.id,
+              force.polarValues.magnitude,
+              value,
+              { magnitude: force.polarText.magnitude, angle: text },
+            ),
+          ),
+        );
+      }
+      editor.append(header, fields);
+      return editor;
+    });
+    appliedForcesList.replaceChildren(...editors);
+  };
+
+  const renderForceAnalysis = (
+    selection: Extract<SelectionProperties, { type: "particle" }>,
+  ): void => {
+    const display = selection.forceDisplay;
+    const weightText = formatWorkingValue(display.weightMagnitude);
+    const weightExpression = createMathExpression(
+      `W = mg = ${display.weightWorking} = ${weightText} N`,
+    );
+    weightExpression.querySelectorAll("mi").forEach((identifier) => {
+      if (identifier.textContent === "m") identifier.classList.add("weight-m-symbol");
+      if (identifier.textContent === "g") identifier.classList.add("physics-symbol");
+    });
+    particleWeightValue.replaceChildren(weightExpression);
+    setExactValueTooltip(
+      particleWeightValue,
+      weightText,
+      display.weightMagnitude.value,
+    );
+    normalReactionRow.hidden = display.normalReaction === null;
+    if (display.normalReaction) {
+      const reactionText = formatWorkingValue(display.normalReaction);
+      const reactionExpression = createMathExpression(`R = ${reactionText} N`);
+      particleNormalReactionValue.replaceChildren(reactionExpression);
+      setExactValueTooltip(
+        particleNormalReactionValue,
+        reactionText,
+        display.normalReaction.value,
+      );
+    } else {
+      particleNormalReactionValue.replaceChildren();
+      setExactValueTooltip(particleNormalReactionValue, null, 0);
+    }
+    const renderResolutionLine = (
+      element: HTMLElement,
+      axis: "x" | "y",
+      terms: string,
+      result: string,
+      value: { value: number },
+    ): void => {
+      const expression = createForceResolutionExpression(axis, terms, result);
+      element.replaceChildren(expression.element);
+      setExactValueTooltip(expression.finalAnswer, result, value.value);
+    };
+    const horizontalTerms = display.forces.map((force) =>
+      formatWorkingValue(force.x)
+    );
+    const verticalTerms = display.forces.map((force) =>
+      formatWorkingValue(force.y)
+    );
+    const resultantX = formatWorkingValue(display.resultant.x);
+    const resultantY = formatWorkingValue(display.resultant.y);
+    renderResolutionLine(
+      forceResultantX,
+      "x",
+      formatSignedTerms(horizontalTerms),
+      resultantX,
+      display.resultant.x,
+    );
+    renderResolutionLine(
+      forceResultantY,
+      "y",
+      formatSignedTerms(verticalTerms),
+      resultantY,
+      display.resultant.y,
+    );
+    const accelerationX = formatWorkingValue(display.acceleration.x);
+    const accelerationY = formatWorkingValue(display.acceleration.y);
+    const accelerationXExpression = createForceAccelerationExpression(
+      "x",
+      resultantX,
+      selection.massText,
+      accelerationX,
+    );
+    forceAccelerationX.replaceChildren(accelerationXExpression.element);
+    setExactValueTooltip(
+      accelerationXExpression.finalAnswer,
+      accelerationX,
+      display.acceleration.x.value,
+    );
+    const accelerationYExpression = createForceAccelerationExpression(
+      "y",
+      resultantY,
+      selection.massText,
+      accelerationY,
+    );
+    forceAccelerationY.replaceChildren(accelerationYExpression.element);
+    setExactValueTooltip(
+      accelerationYExpression.finalAnswer,
+      accelerationY,
+      display.acceleration.y.value,
+    );
+    refreshExpandedCalculation();
+  };
 
   particlePauseAtGreatestToggle.addEventListener("change", () => {
     callbacks.onParticlePauseAtGreatestHeightChange(
@@ -989,7 +1533,7 @@ export function createControls(callbacks: ControlCallbacks): Controls {
 
       if (selection?.type === "particle") {
         currentParticleSelection = selection;
-        currentParticleMass = selection.mass;
+        currentParticleMassText = selection.massText;
         currentParticleInitialVelocityText = { ...selection.initialVelocityText };
         currentParticleInitialVelocityValues = {
           ...selection.initialVelocityValues,
@@ -1001,9 +1545,24 @@ export function createControls(callbacks: ControlCallbacks): Controls {
         particlePositionX.textContent = formatNumber(selection.position.x);
         particlePositionY.textContent = formatNumber(selection.position.y);
         if (document.activeElement !== particleMassInput) {
-          particleMassInput.value = formatNumber(selection.mass);
+          particleMassInput.value = selection.massText;
         }
         particleMassInput.removeAttribute("aria-invalid");
+        showResultantForceToggle.checked = selection.showResultantForce;
+        appliedForceGlobalMode.hidden = selection.appliedForces.length === 0;
+        const cartesianForces = selection.appliedForceEditorMode === "components";
+        appliedForceModeComponents.classList.toggle("is-active", cartesianForces);
+        appliedForceModePolar.classList.toggle("is-active", !cartesianForces);
+        appliedForceModeComponents.setAttribute(
+          "aria-pressed",
+          String(cartesianForces),
+        );
+        appliedForceModePolar.setAttribute(
+          "aria-pressed",
+          String(!cartesianForces),
+        );
+        renderAppliedForces(selection);
+        renderForceAnalysis(selection);
         if (document.activeElement !== particleInitialVelocityXInput) {
           particleInitialVelocityXInput.value = selection.initialVelocityText.x;
         }
@@ -1057,9 +1616,8 @@ export function createControls(callbacks: ControlCallbacks): Controls {
         particlePauseTargetInput.removeAttribute("aria-invalid");
         renderSelectedKinematicComponent();
         particlePropertiesScroll.scrollTop = preservedScrollTop;
-        if (particleAnalysisExpanded) {
-          particlePropertiesScrollTop = particlePropertiesScroll.scrollTop;
-        }
+        particleTabScrollPositions[selectedParticleTab] =
+          particlePropertiesScroll.scrollTop;
       } else if (selection?.type === "ground") {
         if (motionGraphDialog.open) motionGraphDialog.close();
         currentParticleSelection = null;
@@ -1162,6 +1720,14 @@ export function parseGravity(value: string): number | null {
 
   const parsedValue = Number(trimmedValue);
   return Number.isFinite(parsedValue) && parsedValue >= 0 ? parsedValue : null;
+}
+
+export function clearSoleZeroInputValue(value: string): string {
+  return value.trim() === "0" ? "" : value;
+}
+
+export function defaultBlankInputValue(value: string): string {
+  return value.trim() === "" ? "0" : value;
 }
 
 export function parsePositiveProperty(value: string): number | null {
@@ -1357,6 +1923,16 @@ function formatThreeDecimalPlaces(value: number): string {
   return Object.is(rounded, -0) ? "0.000" : rounded.toFixed(3);
 }
 
+export function formatSignedTerms(terms: string[]): string {
+  if (terms.length === 0) return "0";
+  return terms.reduce((text, term, index) => {
+    const negative = /^[-−]/.test(term);
+    const magnitude = term.replace(/^[-−]/, "");
+    if (index === 0) return negative ? `−${magnitude}` : magnitude;
+    return `${text} ${negative ? "−" : "+"} ${magnitude}`;
+  }, "");
+}
+
 function setSuvatAnalysis(
   equationsContainer: HTMLElement,
   equations: KinematicEquationResult[],
@@ -1436,6 +2012,12 @@ function populateSuvatEquationElement(
   const squareRoot = element.querySelector<HTMLElement>(".suvat-square-root");
   if (!formula || !substitution || !result || !squareRoot) return;
 
+  element.classList.remove("force-modal-equation");
+  element.closest(".suvat-calculation-dialog")?.classList.remove(
+    "force-calculation-mode",
+  );
+  formula.hidden = false;
+  result.hidden = false;
   formula.replaceChildren(createMathExpression(equation.formula));
   substitution.replaceChildren(createMathExpression(`= ${equation.substitution}`));
   result.replaceChildren(

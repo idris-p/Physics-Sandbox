@@ -30,7 +30,7 @@ export interface PhaseIntervalNoteOptions {
   phase: KinematicPhase;
   currentTime: number;
   currentTimeEnteredText?: string;
-  gravityText: string;
+  gravityText: string | null;
   groundHeight: number;
 }
 
@@ -76,7 +76,7 @@ export function createPhaseIntervalNote({
 function getExactPhaseStart(
   particle: Particle,
   startTime: number,
-  gravityText: string,
+  gravityText: string | null,
   groundHeight: number,
 ): DisplayValue {
   const exactDisplay = getGroundContactPauseTimeDisplay(

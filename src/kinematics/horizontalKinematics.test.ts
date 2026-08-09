@@ -1,8 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { calculateHorizontalEquationResults } from "./horizontalKinematics";
+import {
+  calculateHorizontalAnalysisEquationResults,
+  calculateHorizontalEquationResults,
+} from "./horizontalKinematics";
 import { exactExpression } from "./exactDisplay";
 
 describe("horizontal constant-velocity analysis", () => {
+  it("promotes non-zero horizontal acceleration to full SUVAT", () => {
+    const results = calculateHorizontalAnalysisEquationResults(
+      { s: 6, u: 0, v: 6, a: 3, t: 2 },
+      { u: "0", a: "3", t: "2" },
+    );
+
+    expect(results).toHaveLength(5);
+    expect(results.map(({ formula }) => formula)).toContain("v = u + at");
+    expect(results.every((result) => Math.abs(result.result - result.expected) < 1e-12))
+      .toBe(true);
+  });
+
   it("shows one concise horizontal relationship", () => {
     const results = calculateHorizontalEquationResults(
       { s: 12, u: 3, v: 3, a: 0, t: 4 },

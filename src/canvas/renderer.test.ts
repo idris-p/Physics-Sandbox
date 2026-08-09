@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  ZERO_RESULTANT_MARKER_RADIUS_RATIO,
+  calculateZeroResultantMarkerRadius,
+  drawZeroResultantMarker,
   drawCanvasMathValue,
   findCanvasExactValueHoverTarget,
+  shouldRenderForceAnnotations,
 } from "./renderer";
 
 function createRecordingContext(): {
@@ -50,6 +54,46 @@ describe("canvas annotation mathematics", () => {
     expect(paintedText).toContain("25√(3)");
     expect(paintedText).toContain("49");
     expect(paintedText.every((text) => !text.includes("/"))).toBe(true);
+  });
+});
+
+describe("force-arrow visibility", () => {
+  it("follows the scene presentation toggle", () => {
+    expect(shouldRenderForceAnnotations({ showForceArrows: true })).toBe(true);
+    expect(shouldRenderForceAnnotations({ showForceArrows: false })).toBe(false);
+  });
+
+  it("draws the zero-resultant marker as a red centre dot", () => {
+    const arcs: number[][] = [];
+    let filled = false;
+    const context = {
+      fillStyle: "",
+      save: () => undefined,
+      restore: () => undefined,
+      beginPath: () => undefined,
+      arc: (...values: number[]) => arcs.push(values),
+      fill: () => { filled = true; },
+    } as unknown as CanvasRenderingContext2D;
+
+    const markerRadius = calculateZeroResultantMarkerRadius(20);
+    drawZeroResultantMarker(context, { x: 40, y: 60 }, markerRadius);
+
+    expect(context.fillStyle).toBe("#c63329");
+    expect(arcs[0]?.slice(0, 3)).toEqual([
+      40,
+      60,
+      markerRadius,
+    ]);
+    expect(filled).toBe(true);
+  });
+
+  it("scales the zero-resultant marker with particle zoom size", () => {
+    expect(calculateZeroResultantMarkerRadius(10)).toBe(
+      10 * ZERO_RESULTANT_MARKER_RADIUS_RATIO,
+    );
+    expect(calculateZeroResultantMarkerRadius(40)).toBe(
+      4 * calculateZeroResultantMarkerRadius(10),
+    );
   });
 });
 

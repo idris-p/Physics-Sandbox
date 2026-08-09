@@ -51,6 +51,7 @@ export interface SuvatEnteredValues {
   uDisplay?: DisplayValue;
   vDisplay?: DisplayValue;
   a?: string;
+  aDisplay?: DisplayValue;
   t?: string;
   tDisplay?: DisplayValue;
 }
@@ -179,7 +180,8 @@ function createDisplayState(
 ): SuvatDisplayState {
   const u = enteredValues.uDisplay ??
     createInputDisplayValue(state.u, enteredValues.u);
-  const a = createInputDisplayValue(state.a, enteredValues.a);
+  const a = enteredValues.aDisplay ??
+    createInputDisplayValue(state.a, enteredValues.a);
   const t = enteredValues.tDisplay ??
     createInputDisplayValue(state.t, enteredValues.t);
 

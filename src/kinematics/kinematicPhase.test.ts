@@ -45,7 +45,7 @@ describe("determineActiveKinematicPhase", () => {
     expect(kinematics.a).toBe(-9.8);
   });
 
-  it("starts a zero-motion grounded phase at impact after contact", () => {
+  it("starts a vertically constrained phase without stopping horizontal motion", () => {
     const particle = createParticle("grounded", { x: 0, y: 10 });
     particle.initialVelocity.x = 3;
     const impactTime = calculateGroundImpactTime(10, 0, 9.8, 0);
@@ -62,7 +62,7 @@ describe("determineActiveKinematicPhase", () => {
       kind: "grounded",
       startTime: impactTime,
       initialPosition: { x: 3 * impactTime, y: 0 },
-      initialVelocity: { x: 0, y: 0 },
+      initialVelocity: { x: 3, y: 0 },
       acceleration: { x: 0, y: 0 },
     });
     expect(

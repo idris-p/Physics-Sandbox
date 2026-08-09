@@ -4,6 +4,7 @@ import {
   calculateInitialVelocityTextSize,
   getInitialVelocityAnnotation,
   INITIAL_VELOCITY_ANGLE_ARC_RADIUS_METRES,
+  INITIAL_VELOCITY_COLOUR,
   isNarrowInitialVelocityAngle,
   isMultipleOfNinetyDegrees,
 } from "./initialVelocityAnnotation";
@@ -11,6 +12,10 @@ import {
 const standardConvention = { positiveX: "right", positiveY: "up" } as const;
 
 describe("2D initial velocity annotation", () => {
+  it("uses the rough-ground line presentation colour", () => {
+    expect(INITIAL_VELOCITY_COLOUR).toBe("#aaa69d");
+  });
+
   it("scales all notation text directly with the camera zoom", () => {
     expect(calculateInitialVelocityTextSize(20)).toBe(10);
     expect(calculateInitialVelocityTextSize(80)).toBe(40);

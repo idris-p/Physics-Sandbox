@@ -116,7 +116,7 @@ function getExactWorldComponents(
   return x && y ? { x, y } : null;
 }
 
-function getExactSpeedText(x: Rational, y: Rational): string {
+export function getExactSpeedText(x: Rational, y: Rational): string {
   const squaredSpeed = addRationals(squareRational(x), squareRational(y));
   const numeratorRoot = integerSquareRoot(squaredSpeed.numerator);
   const denominatorRoot = integerSquareRoot(squaredSpeed.denominator);
@@ -132,12 +132,22 @@ function getExactSpeedText(x: Rational, y: Rational): string {
   return `√(${formatRational(squaredSpeed)})`;
 }
 
-function getExactAngleText(
+export function getExactAngleText(
   x: Rational,
   y: Rational,
   settings: SimulationSettings,
 ): string {
   if (x.numerator === 0n && y.numerator === 0n) return "0";
+
+  const measuredAngle = measureVelocityAngle(
+    {
+      x: Number(x.numerator) / Number(x.denominator),
+      y: Number(y.numerator) / Number(y.denominator),
+    },
+    settings,
+  );
+  const simpleAngle = formatFiniteEditorAngle(measuredAngle);
+  if (simpleAngle !== null) return simpleAngle;
 
   const reference = getAngleReferenceDirection(settings.angleReferenceAxis);
   const turn = settings.angleDirection === "anticlockwise" ? 1 : -1;
@@ -193,6 +203,13 @@ function normaliseFiniteEditorDecimal(text: string): string {
   return /^-?(?:\d+|\d*\.\d{1,3})$/.test(asciiText)
     ? asciiText
     : text;
+}
+
+function formatFiniteEditorAngle(value: number): string | null {
+  const rounded = Number(value.toFixed(3));
+  const tolerance = 1e-10 * Math.max(1, Math.abs(value));
+  if (Math.abs(value - rounded) > tolerance) return null;
+  return String(Object.is(rounded, -0) ? 0 : rounded);
 }
 
 function integerSquareRoot(value: bigint): bigint {
