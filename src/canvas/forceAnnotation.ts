@@ -1,8 +1,14 @@
 import { createAppliedForceEditorConversion } from "../dynamics/appliedForceEditorConversion";
 import { analyseParticleForces } from "../dynamics/forceAnalysis";
-import { createParticleForceDisplay } from "../dynamics/forceDisplay";
+import {
+  createParticleForceDisplay,
+  type FrictionDisplayInput,
+  type NormalReactionDisplayInput,
+  type TensionDisplayInput,
+} from "../dynamics/forceDisplay";
 import type { Vec2 } from "../math/Vec2";
 import type { Particle } from "../model/Particle";
+import type { Incline } from "../model/Incline";
 import type { SimulationSettings } from "../model/SimulationSettings";
 import {
   absoluteDisplayValue,
@@ -20,6 +26,7 @@ import {
   getExactSpeedText,
 } from "../kinematics/velocityEditorConversion";
 import { isMultipleOfNinetyDegrees } from "./initialVelocityAnnotation";
+import { getInclineGeometry } from "../geometry/inclineGeometry";
 
 export const FORCE_ARROW_LENGTH_METRES = 3;
 export const FORCE_ARROW_LINE_DASH: readonly number[] = [];
@@ -27,6 +34,7 @@ export const RESULTANT_FORCE_COLOUR = "#c63329";
 
 interface ForceAnnotationBase {
   id: string;
+  label: string;
   direction: Vec2;
   magnitude: number;
   colour?: string;
@@ -133,19 +141,30 @@ function sameDirection(first: Vec2, second: Vec2): boolean {
 export function getForceAnnotations(
   particle: Particle,
   settings: SimulationSettings,
-  normalReactionMagnitude = 0,
+  normalReaction: number | NormalReactionDisplayInput = 0,
+  incline: Incline | null = null,
+  friction: FrictionDisplayInput | null = null,
+  tension: TensionDisplayInput | null = null,
 ): ForceAnnotation[] {
+  const normalReactionMagnitude = typeof normalReaction === "number"
+    ? normalReaction
+    : normalReaction.magnitude;
   const display = createParticleForceDisplay(
     particle,
     settings,
-    normalReactionMagnitude,
+    normalReaction,
+    friction,
+    tension,
   );
   if (particle.showResultantForce) {
     return getResultantForceAnnotations(
       particle,
       settings,
       display,
-      normalReactionMagnitude,
+      normalReaction,
+      incline,
+      friction,
+      tension,
     );
   }
   const weightMagnitude = particle.mass * settings.gravity;
@@ -153,6 +172,7 @@ export function getForceAnnotations(
     ? []
     : [{
         id: "weight",
+        label: "Weight",
         kind: "magnitude",
         direction: { x: 0, y: -1 },
         magnitudeText: formatWorkingValue(display.weightMagnitude),
@@ -162,19 +182,54 @@ export function getForceAnnotations(
   if (normalReactionMagnitude > 0 && display.normalReaction) {
     annotations.push({
       id: "normal-reaction",
+      label: "Normal Reaction",
       kind: "magnitude",
-      direction: { x: 0, y: 1 },
+      direction: typeof normalReaction === "number"
+        ? { x: 0, y: 1 }
+        : {
+            x: normalReaction.vector.x / normalReactionMagnitude,
+            y: normalReaction.vector.y / normalReactionMagnitude,
+          },
       magnitudeText: formatWorkingValue(display.normalReaction),
       magnitude: normalReactionMagnitude,
     });
   }
 
-  particle.appliedForces.forEach((force) => {
+  if (friction && friction.magnitude > 0 && display.friction) {
+    annotations.push({
+      id: "friction",
+      label: "Friction",
+      kind: "magnitude",
+      direction: {
+        x: friction.vector.x / friction.magnitude,
+        y: friction.vector.y / friction.magnitude,
+      },
+      magnitudeText: formatWorkingValue(display.friction),
+      magnitude: friction.magnitude,
+    });
+  }
+
+  if (tension && tension.magnitude > 0 && display.tension) {
+    annotations.push({
+      id: "tension",
+      label: "Tension",
+      kind: "magnitude",
+      direction: {
+        x: tension.vector.x / tension.magnitude,
+        y: tension.vector.y / tension.magnitude,
+      },
+      magnitudeText: formatWorkingValue(display.tension),
+      magnitude: tension.magnitude,
+    });
+  }
+
+  particle.appliedForces.forEach((force, forceIndex) => {
     const magnitude = Math.hypot(force.vector.x, force.vector.y);
     if (magnitude === 0) return;
     const editor = createAppliedForceEditorConversion(force, settings);
     const base = {
       id: force.id,
+      label: `Applied Force ${forceIndex + 1}`,
       direction: {
         x: force.vector.x / magnitude,
         y: force.vector.y / magnitude,
@@ -201,6 +256,14 @@ export function getForceAnnotations(
       });
       return;
     }
+    if (isAlignedWithInclineAxis(force.vector, incline)) {
+      annotations.push({
+        ...base,
+        kind: "magnitude",
+        magnitudeText: editor.polarText.magnitude,
+      });
+      return;
+    }
     annotations.push({
       ...base,
       kind: "angle",
@@ -221,12 +284,28 @@ export function getForceAnnotations(
 export function isZeroResultantForce(
   particle: Particle,
   settings: SimulationSettings,
-  normalReactionMagnitude = 0,
+  normalReaction: number | NormalReactionDisplayInput = 0,
+  friction: FrictionDisplayInput | null = null,
+  tension: TensionDisplayInput | null = null,
 ): boolean {
   const resultant = analyseParticleForces(
     particle,
     settings.gravity,
-    normalReactionMagnitude,
+    typeof normalReaction === "number"
+      ? normalReaction
+      : {
+          magnitude: normalReaction.magnitude,
+          vector: normalReaction.vector,
+        },
+    friction?.vector,
+    tension && tension.magnitude > 1e-12
+      ? [{
+          id: "tension",
+          kind: "tension",
+          label: "Tension",
+          vector: tension.vector,
+        }]
+      : [],
   ).resultant;
   return Math.hypot(resultant.x, resultant.y) < 1e-12;
 }
@@ -235,18 +314,36 @@ function getResultantForceAnnotations(
   particle: Particle,
   settings: SimulationSettings,
   display: ReturnType<typeof createParticleForceDisplay>,
-  normalReactionMagnitude: number,
+  normalReaction: number | NormalReactionDisplayInput,
+  incline: Incline | null,
+  friction: FrictionDisplayInput | null,
+  tension: TensionDisplayInput | null,
 ): ForceAnnotation[] {
   const resultant = analyseParticleForces(
     particle,
     settings.gravity,
-    normalReactionMagnitude,
+    typeof normalReaction === "number"
+      ? normalReaction
+      : {
+          magnitude: normalReaction.magnitude,
+          vector: normalReaction.vector,
+        },
+    friction?.vector,
+    tension && tension.magnitude > 1e-12
+      ? [{
+          id: "tension",
+          kind: "tension",
+          label: "Tension",
+          vector: tension.vector,
+        }]
+      : [],
   ).resultant;
   const magnitude = Math.hypot(resultant.x, resultant.y);
   if (magnitude < 1e-12) return [];
 
   const base = {
     id: "resultant",
+    label: "Resultant Force",
     direction: {
       x: resultant.x / magnitude,
       y: resultant.y / magnitude,
@@ -255,7 +352,9 @@ function getResultantForceAnnotations(
     colour: RESULTANT_FORCE_COLOUR,
   };
 
-  if (particle.appliedForceEditorMode === "components") {
+  const useCartesianNotation = particle.appliedForces.length > 0 &&
+    particle.appliedForceEditorMode === "components";
+  if (useCartesianNotation) {
     if (Math.abs(resultant.x) < 1e-12 || Math.abs(resultant.y) < 1e-12) {
       const nonZeroDisplay = Math.abs(resultant.x) < 1e-12
         ? display.resultant.y
@@ -285,6 +384,13 @@ function getResultantForceAnnotations(
   const magnitudeText = exactWorldComponents
     ? getExactSpeedText(exactWorldComponents.x, exactWorldComponents.y)
     : formatWorkingValue(derivedValue(magnitude));
+  if (isAlignedWithInclineAxis(resultant, incline)) {
+    return [{
+      ...base,
+      kind: "magnitude",
+      magnitudeText,
+    }];
+  }
   const angleText = exactWorldComponents
     ? getExactAngleText(exactWorldComponents.x, exactWorldComponents.y, settings)
     : formatMeasuredAngle(angle);
@@ -298,6 +404,24 @@ function getResultantForceAnnotations(
     referenceDirection: getAngleReferenceDirection(settings.angleReferenceAxis),
     rotationDirection: settings.angleDirection === "anticlockwise" ? 1 : -1,
   }];
+}
+
+function isAlignedWithInclineAxis(
+  vector: Vec2,
+  incline: Incline | null,
+): boolean {
+  if (!incline) return false;
+  const magnitude = Math.hypot(vector.x, vector.y);
+  if (magnitude < 1e-12) return false;
+  const direction = { x: vector.x / magnitude, y: vector.y / magnitude };
+  const geometry = getInclineGeometry(incline);
+  const tangentAlignment = Math.abs(
+    direction.x * geometry.tangent.x + direction.y * geometry.tangent.y,
+  );
+  const normalAlignment = Math.abs(
+    direction.x * geometry.normal.x + direction.y * geometry.normal.y,
+  );
+  return tangentAlignment >= 1 - 1e-10 || normalAlignment >= 1 - 1e-10;
 }
 
 function getExactWorldResultantComponents(

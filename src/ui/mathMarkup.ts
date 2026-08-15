@@ -80,7 +80,9 @@ export function tokenizeMathText(text: string): MathToken[] {
       continue;
     }
 
-    const rationalSurd = remaining.match(/^([−-]?)(\d*)√\(([^()]*)\)\/(\d+)/);
+    const rationalSurd = remaining.match(
+      /^([−-]?)((?:\d+(?:\.\d+)?|\.\d+)?)√\(([^()]*)\)\/((?:\d+(?:\.\d+)?|\.\d+))/,
+    );
     if (rationalSurd) {
       const sign = rationalSurd[1] === "-" ? "−" : rationalSurd[1];
       tokens.push({
@@ -110,7 +112,9 @@ export function tokenizeMathText(text: string): MathToken[] {
       continue;
     }
 
-    const fraction = remaining.match(/^(\d+)\/(\d+)/);
+    const fraction = remaining.match(
+      /^((?:\d+(?:\.\d+)?|\.\d+))\/((?:\d+(?:\.\d+)?|\.\d+))/,
+    );
     if (fraction) {
       const [matched, numerator, denominator] = fraction;
       const exponent = readExponent(remaining.slice(matched.length));
@@ -135,7 +139,7 @@ export function tokenizeMathText(text: string): MathToken[] {
 
     const identifier = remaining.match(/^[A-Za-z]/);
     if (identifier) {
-      const subscript = remaining.slice(1).match(/^_([A-Za-z0-9])/);
+      const subscript = remaining.slice(1).match(/^_([A-Za-z0-9∥⊥])/u);
       const identifierLength = 1 + (subscript?.[0].length ?? 0);
       const exponent = readExponent(remaining.slice(identifierLength));
       const token: Extract<MathToken, { kind: "identifier" }> = {
@@ -169,30 +173,112 @@ export function createMathExpression(text: string): Element {
   return math;
 }
 
+export function splitBreakableMathText(text: string): string[] {
+  const chunks: string[] = [];
+  let chunkStart = 0;
+  let bracketDepth = 0;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (character === "(" || character === "[") {
+      bracketDepth += 1;
+      continue;
+    }
+    if (character === ")" || character === "]") {
+      bracketDepth = Math.max(0, bracketDepth - 1);
+      continue;
+    }
+    if (bracketDepth !== 0 || !"=+−-".includes(character)) continue;
+
+    const precedingText = text.slice(chunkStart, index).trimEnd();
+    const previousCharacter = precedingText.at(-1);
+    const isUnarySign = character !== "=" && (
+      precedingText.length === 0 ||
+      previousCharacter === "=" ||
+      previousCharacter === "+" ||
+      previousCharacter === "−" ||
+      previousCharacter === "-" ||
+      previousCharacter === "±" ||
+      previousCharacter === "·" ||
+      previousCharacter === "×"
+    );
+    if (isUnarySign || precedingText.length === 0) continue;
+
+    chunks.push(precedingText);
+    chunkStart = index;
+  }
+
+  const finalChunk = text.slice(chunkStart).trim();
+  if (finalChunk) chunks.push(finalChunk);
+  return chunks.length > 0 ? chunks : [text];
+}
+
+export function createBreakableMathExpression(text: string): HTMLElement {
+  const expression = document.createElement("span");
+  expression.className = "breakable-math-expression";
+  expression.setAttribute("aria-label", text);
+  expression.append(...splitBreakableMathText(text).map((chunk) => {
+    const math = createMathExpression(chunk);
+    math.classList.add("math-break-chunk");
+    math.setAttribute("aria-hidden", "true");
+    return math;
+  }));
+  return expression;
+}
+
 export interface ForceEquationExpression {
   element: HTMLElement;
   finalAnswer: HTMLElement;
 }
 
 export function createForceResolutionExpression(
-  axis: "x" | "y",
+  axis: "x" | "y" | "parallel" | "perpendicular",
   terms: string,
   resultant: string,
+  breakable = false,
 ): ForceEquationExpression {
+  const axisSymbol = getForceAxisSymbol(axis);
+  const ariaLabel = `sum of forces in ${axis}, equals ${terms}, equals ${resultant} newtons`;
+  if (breakable) {
+    return createBreakableForceEquationExpression(
+      [`ΣF_${axisSymbol}`, ...splitBreakableMathText(`= ${terms}`)],
+      resultant,
+      "N",
+      ariaLabel,
+    );
+  }
   return createForceEquationExpression(
-    createMathExpression(`ΣF_${axis} = ${terms} = `),
+    createMathExpression(`ΣF_${axisSymbol} = ${terms} = `),
     resultant,
     "N",
-    `sum of forces in ${axis}, equals ${terms}, equals ${resultant} newtons`,
+    ariaLabel,
   );
 }
 
 export function createForceAccelerationExpression(
-  axis: "x" | "y",
+  axis: "x" | "y" | "parallel" | "perpendicular",
   resultant: string,
   mass: string,
   acceleration: string,
+  breakable = false,
 ): ForceEquationExpression {
+  const axisSymbol = getForceAxisSymbol(axis);
+  const ariaLabel = `a ${axis}, equals F ${axis} divided by m, equals ${resultant} divided by ${mass}, equals ${acceleration} metres per second squared`;
+  if (breakable) {
+    const leadingTerm = createMathExpression(`a_${axisSymbol}`);
+    leadingTerm.classList.add("math-break-chunk");
+    const symbolicTerm = createForceFractionChunk(
+      `F_${axisSymbol}`,
+      "m",
+    );
+    const substitutedTerm = createForceFractionChunk(resultant, mass);
+    return createBreakableForceEquationExpression(
+      [leadingTerm, symbolicTerm, substitutedTerm],
+      acceleration,
+      "m s⁻²",
+      ariaLabel,
+    );
+  }
   const math = createMathElement("math");
   math.setAttribute("class", "suvat-math");
   math.setAttribute(
@@ -201,7 +287,7 @@ export function createForceAccelerationExpression(
   );
   const symbolicFraction = createMathElement("mfrac");
   const symbolicNumerator = createMathElement("mrow");
-  symbolicNumerator.append(...createMathNodes(`F_${axis}`));
+  symbolicNumerator.append(...createMathNodes(`F_${axisSymbol}`));
   const symbolicDenominator = createMathElement("mrow");
   symbolicDenominator.append(...createMathNodes("m"));
   symbolicFraction.append(symbolicNumerator, symbolicDenominator);
@@ -212,7 +298,7 @@ export function createForceAccelerationExpression(
   substitutedDenominator.append(...createMathNodes(mass));
   substitutedFraction.append(substitutedNumerator, substitutedDenominator);
   math.append(
-    ...createMathNodes(`a_${axis} = `),
+    ...createMathNodes(`a_${axisSymbol} = `),
     symbolicFraction,
     ...createMathNodes(" = "),
     substitutedFraction,
@@ -222,8 +308,32 @@ export function createForceAccelerationExpression(
     math,
     acceleration,
     "m s⁻²",
-    `a ${axis}, equals F ${axis} divided by m, equals ${resultant} divided by ${mass}, equals ${acceleration} metres per second squared`,
+    ariaLabel,
   );
+}
+
+function createForceFractionChunk(
+  numeratorText: string,
+  denominatorText: string,
+): Element {
+  const math = createMathElement("math");
+  math.setAttribute("class", "suvat-math math-break-chunk");
+  const fraction = createMathElement("mfrac");
+  const numerator = createMathElement("mrow");
+  numerator.append(...createMathNodes(numeratorText));
+  const denominator = createMathElement("mrow");
+  denominator.append(...createMathNodes(denominatorText));
+  fraction.append(numerator, denominator);
+  math.append(...createMathNodes("= "), fraction);
+  return math;
+}
+
+function getForceAxisSymbol(
+  axis: "x" | "y" | "parallel" | "perpendicular",
+): "x" | "y" | "∥" | "⊥" {
+  if (axis === "parallel") return "∥";
+  if (axis === "perpendicular") return "⊥";
+  return axis;
 }
 
 function createForceEquationExpression(
@@ -243,6 +353,36 @@ function createForceEquationExpression(
     finalAnswer,
     createMathExpression(` ${unit}`),
   );
+  return { element, finalAnswer };
+}
+
+function createBreakableForceEquationExpression(
+  workingChunks: Array<string | Element>,
+  result: string,
+  unit: string,
+  ariaLabel: string,
+): ForceEquationExpression {
+  const element = document.createElement("span");
+  element.className = "force-equation-expression breakable-force-equation";
+  element.setAttribute("aria-label", ariaLabel);
+  for (const chunk of workingChunks) {
+    const math = typeof chunk === "string" ? createMathExpression(chunk) : chunk;
+    math.classList.add("math-break-chunk");
+    math.setAttribute("aria-hidden", "true");
+    element.append(math);
+  }
+
+  const resultChunk = document.createElement("span");
+  resultChunk.className = "force-equation-result-chunk math-break-chunk";
+  const equals = createMathExpression("=");
+  equals.setAttribute("aria-hidden", "true");
+  const finalAnswer = document.createElement("span");
+  finalAnswer.className = "force-final-answer";
+  finalAnswer.append(createMathExpression(result));
+  const unitExpression = createMathExpression(` ${unit}`);
+  unitExpression.setAttribute("aria-hidden", "true");
+  resultChunk.append(equals, finalAnswer, unitExpression);
+  element.append(resultChunk);
   return { element, finalAnswer };
 }
 
@@ -473,15 +613,29 @@ function createSuperscript(base: Element, exponent: string): Element {
 
 function createSubscript(base: Element, subscript: string): Element {
   const node = createMathElement("msub");
+  const subscriptNode = subscript === "∥"
+    ? createParallelSubscript()
+    : createMathElementWithText(
+        /^\d$/.test(subscript) ? "mn" : "mi",
+        subscript,
+        { mathvariant: "normal" },
+      );
   node.append(
     base,
-    createMathElementWithText(
-      /^\d$/.test(subscript) ? "mn" : "mi",
-      subscript,
-      { mathvariant: "normal" },
-    ),
+    subscriptNode,
   );
   return node;
+}
+
+function createParallelSubscript(): Element {
+  const symbol = createMathElement("mrow");
+  symbol.setAttribute("aria-label", "parallel");
+  symbol.append(
+    createMathElementWithText("mo", "∣", { lspace: "0", rspace: "0" }),
+    createMathElementWithText("mspace", "", { width: "0.14em" }),
+    createMathElementWithText("mo", "∣", { lspace: "0", rspace: "0" }),
+  );
+  return symbol;
 }
 
 function readExponent(text: string): { value?: string; length: number } {
@@ -506,7 +660,9 @@ function readGroupedFraction(
     if (text[index] !== ")") continue;
     depth -= 1;
     if (depth !== 0) continue;
-    const denominator = text.slice(index + 1).match(/^\/(\d+)/);
+    const denominator = text.slice(index + 1).match(
+      /^\/((?:\d+(?:\.\d+)?|\.\d+))/,
+    );
     if (!denominator) return null;
     return {
       numerator: text.slice(1, index),

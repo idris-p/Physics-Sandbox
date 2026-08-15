@@ -20,6 +20,31 @@ import {
 } from "./suvat";
 
 describe("SUVAT equations", () => {
+  it("simplifies velocity derived from a decimal quadratic-surd time", () => {
+    const time = (10 + Math.sqrt(168.6)) / 9.8;
+    const velocity = 10 - 9.8 * time;
+    const timeDisplay = createAutoPauseTimeDisplayValue(time, {
+      kind: "quadratic-surd",
+      linearTerm: "10",
+      radicand: "168.6",
+      denominator: "9.8",
+      radicalSign: "plus",
+    });
+    const state = { s: -3.5, u: 10, v: velocity, a: -9.8, t: time };
+    const enteredValues = { u: "10", a: "-9.8", tDisplay: timeDisplay };
+
+    expect(calculateKinematicDisplayValues(state, enteredValues).v).toBe(
+      "−√(4215)/5",
+    );
+    expect(
+      calculateSuvatEquationResults(state, enteredValues)
+        .find(({ id }) => id === "v-u-at")?.finalValues,
+    ).toEqual([
+      { value: "−√(4215)/5", rounded: false },
+      { value: "-12.985", rounded: true },
+    ]);
+  });
+
   it("evaluates the standard relationships from a known free-fall state", () => {
     const particle = createParticle("suvat", { x: 0, y: 10 });
     const currentState = calculateParticleState(particle, 1, {

@@ -161,6 +161,33 @@ describe("exact SUVAT display values", () => {
     ).toBe("500/49 cos(53°) sin(53°)");
   });
 
+  it("evaluates standard trigonometric angles to rationals and surds", () => {
+    const sinThirty = exactTrigValue(
+      0.5,
+      { numerator: 1n, denominator: 1n },
+      "sin",
+      "30",
+    );
+    const cosThirty = exactTrigValue(
+      Math.sqrt(3) / 2,
+      { numerator: 1n, denominator: 1n },
+      "cos",
+      "30",
+    );
+    const sinThirtySquared = exactTrigValue(
+      0.25,
+      { numerator: 1n, denominator: 1n },
+      "sin",
+      "30",
+      2,
+    );
+
+    expect(sinThirty.exact).toEqual({ numerator: 1n, denominator: 2n });
+    expect(sinThirty.exactTrig).toBeUndefined();
+    expect(formatWorkingValue(cosThirty)).toBe("√(3)/2");
+    expect(sinThirtySquared.exact).toEqual({ numerator: 1n, denominator: 4n });
+  });
+
   it("keeps a fraction when its reduced denominator is not a power of ten", () => {
     expect(formatWorkingValue(derivedValue(0.1936))).toBe("121/625");
     expect(formatFinalValue(derivedValue(0.1936))).toEqual([

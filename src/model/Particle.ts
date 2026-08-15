@@ -7,6 +7,7 @@ import type { AngleConvention } from "../kinematics/angleConvention";
 import type { AppliedForce, AppliedForceInputMode } from "./AppliedForce";
 
 export type InitialVelocityInputMode = "angle" | "components";
+export type ParticleShape = "circle" | "square";
 
 export interface EnteredAngleVelocity extends AngleConvention {
   speedText: string;
@@ -25,6 +26,8 @@ export interface EnteredInitialVelocity {
 
 export interface Particle {
   id: string;
+  name: string;
+  shape: ParticleShape;
   mass: number;
   massInput: string;
   appliedForces: AppliedForce[];
@@ -44,6 +47,10 @@ export interface Particle {
   initialVelocityEditorMode: InitialVelocityInputMode;
   initialVelocitySource: InitialVelocityInputMode;
   initialVelocityAngleInput?: EnteredAngleVelocity;
+  initialInclineContact?: {
+    inclineId: string;
+    q: number;
+  };
 }
 
 export interface ParticleState {
@@ -53,9 +60,15 @@ export interface ParticleState {
   acceleration: Vec2;
 }
 
-export function createParticle(id: string, position: Vec2): Particle {
+export function createParticle(
+  id: string,
+  position: Vec2,
+  name = id,
+): Particle {
   return {
     id,
+    name,
+    shape: "circle",
     mass: 1,
     massInput: "1",
     appliedForces: [],

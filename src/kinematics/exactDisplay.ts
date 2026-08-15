@@ -1,3 +1,5 @@
+import { getKnownExactTrigValue } from "./knownExactTrig";
+
 export interface Rational {
   numerator: bigint;
   denominator: bigint;
@@ -100,6 +102,15 @@ export function exactTrigValue(
   if (coefficient.numerator === 0n) {
     return derivedValue(value, { numerator: 0n, denominator: 1n });
   }
+  const knownValue = getKnownExactTrigValue(functionName, Number(angleText));
+  if (knownValue) {
+    return createKnownTrigDisplayValue(
+      value,
+      coefficient,
+      knownValue,
+      exponent,
+    );
+  }
   const exactTrig = {
     coefficient,
     factors: [{ functionName, angleText, exponent }],
@@ -109,6 +120,47 @@ export function exactTrigValue(
     exactTrig,
     exactText: formatExactTrigMonomial(exactTrig),
   };
+}
+
+function createKnownTrigDisplayValue(
+  value: number,
+  coefficient: Rational,
+  knownValue: NonNullable<ReturnType<typeof getKnownExactTrigValue>>,
+  exponent: number,
+): DisplayValue {
+  if (knownValue.kind === "rational") {
+    return derivedValue(
+      value,
+      multiplyRationals(
+        coefficient,
+        raiseRationalToPower(knownValue.value, exponent),
+      ),
+    );
+  }
+
+  const raisedCoefficient = raiseRationalToPower(
+    knownValue.coefficient,
+    exponent,
+  );
+  const pairedRadicands = BigInt(knownValue.radicand) **
+    BigInt(Math.floor(exponent / 2));
+  const finalCoefficient = multiplyRationals(
+    coefficient,
+    multiplyRationals(raisedCoefficient, {
+      numerator: pairedRadicands,
+      denominator: 1n,
+    }),
+  );
+  return exponent % 2 === 0
+    ? derivedValue(value, finalCoefficient)
+    : exactSurdValue(value, finalCoefficient, BigInt(knownValue.radicand));
+}
+
+function raiseRationalToPower(value: Rational, exponent: number): Rational {
+  return normaliseRational(
+    value.numerator ** BigInt(exponent),
+    value.denominator ** BigInt(exponent),
+  );
 }
 
 export function exactExpression(value: number, exactText: string): DisplayValue {
@@ -341,13 +393,13 @@ export function formatWorkingValue(value: DisplayValue): string {
     return formatFraction(value.exact);
   }
 
+  if (value.exactText !== undefined) return value.exactText;
+
   if (value.exactSurd) return formatRationalSurd(value.exactSurd);
 
   if (value.exactTrig) return formatExactTrigMonomial(value.exactTrig);
 
   if (value.exactSum) return formatExactAlgebraicSum(value.exactSum);
-
-  if (value.exactText !== undefined) return value.exactText;
 
   return formatGeneratedDecimal(value.value);
 }

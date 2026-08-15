@@ -5,11 +5,14 @@ import {
   analyseParticleForces,
   type ParticleForceAnalysis,
 } from "./forceAnalysis";
+import { solveFriction, type FrictionAnalysis } from "./friction";
 
 export interface GroundContactEnvironment {
   gravity: number;
   groundEnabled: boolean;
   groundHeight?: number;
+  groundRough?: boolean;
+  groundFriction?: number;
 }
 
 export type GroundContactKind =
@@ -28,6 +31,7 @@ export interface GroundContactState {
 export interface ContactForceAnalysis extends ParticleForceAnalysis {
   nonContact: ParticleForceAnalysis;
   contact: GroundContactState;
+  friction: FrictionAnalysis;
 }
 
 export function analyseGroundContactForces(
@@ -40,12 +44,12 @@ export function analyseGroundContactForces(
   const groundHeight = environment.groundHeight ?? GROUND_HEIGHT;
 
   if (!environment.groundEnabled) {
-    return combineContactAnalysis(particle, environment.gravity, nonContact, {
+    return combineContactAnalysis(particle, environment, nonContact, {
       kind: "airborne",
       impactTime: null,
       phaseStartTime: 0,
       normalReactionMagnitude: 0,
-    });
+    }, safeTime);
   }
 
   const impactTime = calculateGroundImpactTimeWithAcceleration(
@@ -56,39 +60,39 @@ export function analyseGroundContactForces(
   );
 
   if (impactTime === null || safeTime < impactTime - groundImpactTimeTolerance(safeTime)) {
-    return combineContactAnalysis(particle, environment.gravity, nonContact, {
+    return combineContactAnalysis(particle, environment, nonContact, {
       kind: "airborne",
       impactTime,
       phaseStartTime: 0,
       normalReactionMagnitude: 0,
-    });
+    }, safeTime);
   }
 
   if (isAtPositiveGroundImpact(safeTime, impactTime)) {
-    return combineContactAnalysis(particle, environment.gravity, nonContact, {
+    return combineContactAnalysis(particle, environment, nonContact, {
       kind: "impact",
       impactTime,
       phaseStartTime: 0,
       normalReactionMagnitude: 0,
-    });
+    }, safeTime);
   }
 
   if (nonContact.resultant.y > 0) {
-    return combineContactAnalysis(particle, environment.gravity, nonContact, {
+    return combineContactAnalysis(particle, environment, nonContact, {
       kind: "post-impact-flight",
       impactTime,
       phaseStartTime: impactTime,
       normalReactionMagnitude: 0,
-    });
+    }, safeTime);
   }
 
   const normalReactionMagnitude = Math.max(0, -nonContact.resultant.y);
-  return combineContactAnalysis(particle, environment.gravity, nonContact, {
+  return combineContactAnalysis(particle, environment, nonContact, {
     kind: "grounded",
     impactTime,
     phaseStartTime: impactTime,
     normalReactionMagnitude,
-  });
+  }, safeTime);
 }
 
 export function calculateGroundImpactTime(
@@ -156,16 +160,45 @@ export function isAfterGroundImpact(time: number, impactTime: number): boolean {
 
 function combineContactAnalysis(
   particle: Particle,
-  gravity: number,
+  environment: GroundContactEnvironment,
   nonContact: ParticleForceAnalysis,
   contact: GroundContactState,
+  time: number,
 ): ContactForceAnalysis {
+  const phaseStartVelocity = particle.initialVelocity.x +
+    nonContact.acceleration.x * contact.phaseStartTime;
+  const initialFriction = solveFriction({
+    rough: contact.kind === "grounded" && (environment.groundRough ?? false),
+    coefficientOfFriction: environment.groundFriction ?? 0,
+    normalReactionMagnitude: contact.normalReactionMagnitude,
+    tangent: { x: 1, y: 0 },
+    tangentialVelocity: phaseStartVelocity,
+    nonFrictionTangentialForce: nonContact.resultant.x,
+  });
+  const initialAcceleration =
+    (nonContact.resultant.x + initialFriction.signedTangentialForce) /
+    particle.mass;
+  const elapsed = Math.max(0, time - contact.phaseStartTime);
+  const stopTime = phaseStartVelocity * initialAcceleration < 0
+    ? -phaseStartVelocity / initialAcceleration
+    : null;
+  const friction = stopTime !== null && elapsed >= stopTime - 1e-10
+    ? solveFriction({
+        rough: contact.kind === "grounded" && (environment.groundRough ?? false),
+        coefficientOfFriction: environment.groundFriction ?? 0,
+        normalReactionMagnitude: contact.normalReactionMagnitude,
+        tangent: { x: 1, y: 0 },
+        tangentialVelocity: 0,
+        nonFrictionTangentialForce: nonContact.resultant.x,
+      })
+    : initialFriction;
   const finalAnalysis = analyseParticleForces(
     particle,
-    gravity,
+    environment.gravity,
     contact.normalReactionMagnitude,
+    friction.vector,
   );
-  return { ...finalAnalysis, nonContact, contact };
+  return { ...finalAnalysis, nonContact, contact, friction };
 }
 
 function groundImpactTimeTolerance(time: number): number {

@@ -79,7 +79,11 @@ export function determineMotionGraphEndTime(
   currentTime: number,
   environment: PhysicsEnvironment,
 ): number {
-  if (phase.kind === "free-flight" && environment.groundEnabled) {
+  if (
+    phase.kind === "free-flight" &&
+    environment.groundEnabled &&
+    !particle.initialInclineContact
+  ) {
     const impactTime = calculateGroundImpactTimeWithAcceleration(
       particle.initialPosition.y,
       particle.initialVelocity.y,

@@ -2,9 +2,13 @@ import { describe, expect, it } from "vitest";
 import { createCamera, worldToScreen } from "./camera";
 import {
   groupParticlesByPosition,
+  getInclineScreenRotation,
   getRenderedParticleGeometry,
+  getRenderedParticleShapeGeometry,
+  isPointInRenderedParticle,
   PARTICLE_DIAMETER_METRES,
 } from "./particleGeometry";
+import { createIncline } from "../model/Incline";
 
 describe("particle render geometry", () => {
   it("renders a particle at exactly one metre in diameter at every zoom", () => {
@@ -25,6 +29,43 @@ describe("particle render geometry", () => {
     const geometry = getRenderedParticleGeometry(pointPosition, camera);
 
     expect(geometry.centre).toEqual(pointPosition);
+  });
+
+  it("renders a square with an exact one-metre side", () => {
+    const camera = createCamera(800, 600);
+    camera.pixelsPerMetre = 64;
+
+    const geometry = getRenderedParticleShapeGeometry(
+      { x: 100, y: 200 },
+      camera,
+      "square",
+    );
+
+    expect(geometry.size).toBe(64);
+    expect(geometry.centre).toEqual({ x: 100, y: 200 });
+    expect(geometry.rotation).toBe(0);
+  });
+
+  it("rotates squares to align with either incline direction", () => {
+    const rightRising = createIncline("right", { x: 0, y: 0 });
+    const leftRising = createIncline("left", { x: 0, y: 0 });
+    leftRising.direction = "rises-left";
+
+    expect(getInclineScreenRotation(rightRising)).toBeCloseTo(-Math.PI / 6, 12);
+    expect(getInclineScreenRotation(leftRising)).toBeCloseTo(-5 * Math.PI / 6, 12);
+  });
+
+  it("includes the visible corners in a square's hit area", () => {
+    const camera = createCamera(800, 600);
+    camera.pixelsPerMetre = 40;
+    const geometry = getRenderedParticleShapeGeometry(
+      { x: 100, y: 100 },
+      camera,
+      "square",
+    );
+
+    expect(isPointInRenderedParticle({ x: 119, y: 119 }, geometry)).toBe(true);
+    expect(isPointInRenderedParticle({ x: 121, y: 121 }, geometry)).toBe(false);
   });
 
   it("keeps the mathematical point as its centre on enabled ground", () => {

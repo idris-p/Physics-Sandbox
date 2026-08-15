@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createParticle } from "../model/Particle";
+import { createIncline } from "../model/Incline";
+import { getInclineGeometry, pointAtInclineCoordinate } from "../geometry/inclineGeometry";
 import {
   calculateGroundImpactTime,
   calculateParticleState,
@@ -129,5 +131,53 @@ describe("determineActiveKinematicPhase", () => {
       t: upward.t,
     });
     expect({ phase, state }).toEqual(snapshot);
+  });
+
+  it("represents constrained incline motion as one analytical tangential phase", () => {
+    const incline = createIncline("incline", { x: 0, y: 0 });
+    const particle = createParticle(
+      "slider",
+      pointAtInclineCoordinate(incline, 5),
+    );
+    particle.initialInclineContact = { inclineId: incline.id, q: 5 };
+    const phase = determineActiveKinematicPhase(particle, 0.5, {
+      ...environment,
+      inclines: [incline],
+    });
+    const geometry = getInclineGeometry(incline);
+
+    expect(phase).toMatchObject({
+      kind: "incline-contact",
+      startTime: 0,
+      incline: {
+        inclineId: incline.id,
+        initialQ: 5,
+        initialTangentialVelocity: 0,
+        tangentialAcceleration: expect.closeTo(-4.9, 12),
+        slopeLength: geometry.slopeLength,
+      },
+    });
+    expect(phase.acceleration.x).toBeCloseTo(geometry.tangent.x * -4.9, 12);
+    expect(phase.acceleration.y).toBeCloseTo(geometry.tangent.y * -4.9, 12);
+  });
+
+  it("starts grounded motion when a lower incline endpoint meets ground", () => {
+    const incline = createIncline("incline", { x: 0, y: 0 });
+    const particle = createParticle(
+      "slider",
+      pointAtInclineCoordinate(incline, 1),
+    );
+    particle.initialInclineContact = { inclineId: incline.id, q: 1 };
+    const phase = determineActiveKinematicPhase(particle, 1, {
+      ...environment,
+      inclines: [incline],
+    });
+    const geometry = getInclineGeometry(incline);
+
+    expect(phase.kind).toBe("grounded");
+    expect(phase.startTime).toBeGreaterThan(0);
+    expect(phase.initialPosition).toEqual(geometry.lowerEndpoint);
+    expect(phase.initialVelocity.y).toBe(0);
+    expect(phase.initialVelocity.x).toBeLessThan(0);
   });
 });

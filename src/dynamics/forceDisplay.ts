@@ -17,7 +17,32 @@ import {
 import type { AppliedForce } from "../model/AppliedForce";
 import type { Particle } from "../model/Particle";
 import type { SimulationSettings } from "../model/SimulationSettings";
+import type { Vec2 } from "../math/Vec2";
 import { analyseParticleForces } from "./forceAnalysis";
+import type { FrictionRegime } from "./friction";
+
+export interface NormalReactionDisplayInput {
+  magnitude: number;
+  vector: { x: number; y: number };
+  magnitudeDisplay: DisplayValue;
+  xDisplay: DisplayValue;
+  yDisplay: DisplayValue;
+}
+
+export interface FrictionDisplayInput {
+  magnitude: number;
+  vector: Vec2;
+  magnitudeDisplay: DisplayValue;
+  limitingMagnitudeDisplay: DisplayValue;
+  xDisplay: DisplayValue;
+  yDisplay: DisplayValue;
+  regime: FrictionRegime;
+}
+
+export interface TensionDisplayInput {
+  magnitude: number;
+  vector: Vec2;
+}
 
 export interface ForceContributionDisplay {
   id: string;
@@ -29,7 +54,15 @@ export interface ForceContributionDisplay {
 export interface ParticleForceDisplay {
   weightWorking: string;
   weightMagnitude: DisplayValue;
+  weightDirection: Vec2;
   normalReaction: DisplayValue | null;
+  normalReactionDirection: Vec2 | null;
+  friction: DisplayValue | null;
+  frictionLimit: DisplayValue | null;
+  frictionDirection: Vec2 | null;
+  frictionRegime: FrictionRegime | null;
+  tension: DisplayValue | null;
+  tensionDirection: Vec2 | null;
   forces: ForceContributionDisplay[];
   resultant: { x: DisplayValue; y: DisplayValue };
   acceleration: { x: DisplayValue; y: DisplayValue };
@@ -38,12 +71,31 @@ export interface ParticleForceDisplay {
 export function createParticleForceDisplay(
   particle: Particle,
   settings: SimulationSettings,
-  normalReactionMagnitude = 0,
+  normalReaction: number | NormalReactionDisplayInput = 0,
+  friction: FrictionDisplayInput | null = null,
+  tension: TensionDisplayInput | null = null,
 ): ParticleForceDisplay {
+  const normalReactionMagnitude = typeof normalReaction === "number"
+    ? normalReaction
+    : normalReaction.magnitude;
   const analysis = analyseParticleForces(
     particle,
     settings.gravity,
-    normalReactionMagnitude,
+    typeof normalReaction === "number"
+      ? normalReaction
+      : {
+          magnitude: normalReaction.magnitude,
+          vector: normalReaction.vector,
+        },
+    friction?.vector,
+    tension && tension.magnitude > 1e-12
+      ? [{
+          id: "tension",
+          kind: "tension",
+          label: "Tension",
+          vector: tension.vector,
+        }]
+      : [],
   );
   const mass = enteredDecimal(particle.massInput, particle.mass);
   const gravity = enteredDecimal(settings.gravityInput, settings.gravity);
@@ -81,31 +133,84 @@ export function createParticleForceDisplay(
     ...applied.map((force) => force.y),
   ]);
   const normalReactionY = normalReactionMagnitude > 0
-    ? multiplyDisplayValues(
-        worldVerticalToScalar(normalReactionMagnitude, settings.positiveY),
-        derivedValue(-1, { numerator: -1n, denominator: 1n }),
-        nonContactResultantY,
-      )
+    ? typeof normalReaction === "number"
+      ? multiplyDisplayValues(
+          worldVerticalToScalar(normalReactionMagnitude, settings.positiveY),
+          derivedValue(-1, { numerator: -1n, denominator: 1n }),
+          nonContactResultantY,
+        )
+      : normalReaction.yDisplay
     : null;
-  const normalReaction = normalReactionY === null
+  const normalReactionContribution = normalReactionY === null
     ? null
     : {
         id: "normal-reaction",
         label: "Normal Reaction",
-        x: derivedValue(0, { numerator: 0n, denominator: 1n }),
+        x: typeof normalReaction === "number"
+          ? derivedValue(0, { numerator: 0n, denominator: 1n })
+          : normalReaction.xDisplay,
         y: normalReactionY,
       };
-  const forces = [weight, ...(normalReaction ? [normalReaction] : []), ...applied];
+  const frictionContribution = friction && friction.magnitude > 1e-12
+    ? {
+        id: "friction",
+        label: "Friction",
+        x: friction.xDisplay,
+        y: friction.yDisplay,
+      }
+    : null;
+  const tensionContribution = tension && tension.magnitude > 1e-12
+    ? {
+        id: "tension",
+        label: "Tension",
+        x: derivedValue(
+          worldHorizontalToScalar(tension.vector.x, settings.positiveX),
+        ),
+        y: derivedValue(
+          worldVerticalToScalar(tension.vector.y, settings.positiveY),
+        ),
+      }
+    : null;
+  const forces = [
+    weight,
+    ...(normalReactionContribution ? [normalReactionContribution] : []),
+    ...(frictionContribution ? [frictionContribution] : []),
+    ...(tensionContribution ? [tensionContribution] : []),
+    ...applied,
+  ];
   const resultant = {
     x: sumDisplays(forces.map((force) => force.x)),
     y: sumDisplays(forces.map((force) => force.y)),
   };
+  const normalReactionDirection = analysis.forces.find(
+    (force) => force.kind === "normal-reaction",
+  )?.vector ?? null;
+  const frictionVector = analysis.forces.find(
+    (force) => force.kind === "friction",
+  )?.vector ?? null;
   return {
     weightWorking: `${particle.massInput} × ${settings.gravityInput}`,
     weightMagnitude,
+    weightDirection: { x: 0, y: -1 },
     normalReaction: normalReactionY === null
       ? null
-      : absoluteDisplayValue(normalReactionY),
+      : typeof normalReaction === "number"
+        ? absoluteDisplayValue(normalReactionY)
+        : normalReaction.magnitudeDisplay,
+    normalReactionDirection,
+    friction: frictionContribution ? friction!.magnitudeDisplay : null,
+    frictionLimit: frictionContribution
+      ? friction!.limitingMagnitudeDisplay
+      : null,
+    frictionDirection: frictionVector,
+    frictionRegime: frictionContribution ? friction!.regime : null,
+    tension: tensionContribution ? derivedValue(tension!.magnitude) : null,
+    tensionDirection: tensionContribution
+      ? {
+          x: tension!.vector.x / tension!.magnitude,
+          y: tension!.vector.y / tension!.magnitude,
+        }
+      : null,
     forces,
     resultant,
     acceleration: {

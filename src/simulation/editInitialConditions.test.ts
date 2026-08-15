@@ -147,17 +147,31 @@ describe("editParticleInitialVerticalVelocity", () => {
     })).toBe(particle);
   });
 
-  it("rejects a non-positive angle-mode speed", () => {
+  it("accepts zero speed in angle mode", () => {
+    const particle = createParticle("stationary", { x: 0, y: 0 });
+    const edited = editParticleInitialVelocityAngle(
+      particle,
+      0,
+      30,
+      { angleReferenceAxis: "positive-x", angleDirection: "anticlockwise" },
+      { speed: "0", angle: "30" },
+    );
+
+    expect(edited.initialVelocity).toEqual({ x: 0, y: 0 });
+    expect(edited.initialVelocityAngleInput?.speedText).toBe("0");
+  });
+
+  it("rejects a negative angle-mode speed", () => {
     const particle = createParticle("invalid-speed", { x: 0, y: 0 });
     expect(() =>
       editParticleInitialVelocityAngle(
         particle,
-        0,
+        -1,
         30,
         { angleReferenceAxis: "positive-x", angleDirection: "anticlockwise" },
-        { speed: "0", angle: "30" },
+        { speed: "-1", angle: "30" },
       ),
-    ).toThrow("greater than zero");
+    ).toThrow("non-negative");
   });
 
   it("enforces the angle interval (-180, 180] in the mechanics edit boundary", () => {

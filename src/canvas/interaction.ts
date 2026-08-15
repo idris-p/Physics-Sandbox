@@ -1,26 +1,73 @@
 import type { ScreenPoint, Vec2 } from "../math/Vec2";
-import type { ParticleState } from "../model/Particle";
+import type { ParticleShape, ParticleState } from "../model/Particle";
 import { screenToWorld, worldToScreen, type Camera } from "./camera";
 import { hitTestParticles } from "./hitTest";
 import { getRenderedParticleGeometry } from "./particleGeometry";
+import type { Incline } from "../model/Incline";
+import type { Scene } from "../model/Scene";
+import {
+  createIncline,
+  DEFAULT_INCLINE_ANGLE_DEGREES,
+  DEFAULT_INCLINE_HORIZONTAL_LENGTH,
+} from "../model/Incline";
+import { canPlaceIncline } from "../geometry/inclineGeometry";
+import { hitTestInclines } from "./inclineHitTest";
+import {
+  findInclineGridSnap,
+  resolveParticlePlacementAgainstInclines,
+} from "../simulation/inclineSetup";
+import type { PlacementPreview } from "./placementPreview";
+import {
+  calculateInclineAngleAnnotationGeometry,
+  getParticleForceContactDisplay,
+} from "./renderer";
+import { calculateInitialVelocityTextSize } from "./initialVelocityAnnotation";
+import {
+  calculateDraggedInclineHorizontalLength,
+  calculateInclineLengthControlGeometry,
+  hitTestInclineLengthControl,
+  stepInclineHorizontalLength,
+} from "./inclineLengthControl";
+import { hitTestStrings } from "./stringGeometry";
 
-export type Tool = "select" | "particle";
+export type Tool = "select" | "particle" | "incline";
 
 interface InteractionOptions {
   canvas: HTMLCanvasElement;
   deleteTarget: HTMLElement;
   particleSource: HTMLElement;
+  inclineSource: HTMLElement;
   getCamera: () => Camera;
   getTool: () => Tool;
+  getCurrentTime: () => number;
   getParticleStates: () => ParticleState[];
+  getScene: () => Scene;
+  getInclines: () => readonly Incline[];
+  getSelectedInclineId: () => string | null;
   isGroundEnabled: () => boolean;
   getGroundHeight: () => number;
   onSelect: (particleId: string | null) => void;
   onSelectGround: () => void;
+  onSelectIncline: (inclineId: string) => void;
+  onSelectString: (stringId: string) => void;
+  getStringConnectionSourceId: () => string | null;
+  onStringConnectionPointerMove: (position: Vec2 | null) => void;
+  onStringConnectionTarget: (particleId: string | null) => void;
   onPlace: (position: Vec2) => void;
-  onMoveParticle: (particleId: string, position: Vec2) => void;
+  onPlaceIncline: (position: Vec2) => void;
+  resolveParticleMove: (
+    particleId: string,
+    pointerPosition: Vec2,
+    defaultPosition: Vec2,
+  ) => Vec2;
+  isParticleMoveValid: (particleId: string, position: Vec2) => boolean;
+  onMoveParticle: (particleId: string, position: Vec2) => Vec2;
+  onMoveIncline: (inclineId: string, lowerEndpoint: Vec2) => void;
+  onResizeIncline: (inclineId: string, horizontalLength: number) => void;
   onParticleDragChange: (particleId: string | null) => void;
   onDeleteParticle: (particleId: string) => void;
+  onDeleteIncline: (inclineId: string) => void;
+  onPlacementPreviewChange: (preview: PlacementPreview | null) => void;
   onPan: (screenDelta: ScreenPoint) => void;
   onZoom: (screenPoint: ScreenPoint, factor: number) => void;
 }
@@ -41,11 +88,30 @@ interface ParticleDragGesture {
   preview: HTMLElement | null;
 }
 
+interface InclineDragGesture {
+  pointerId: number;
+  inclineId: string;
+  startPoint: ScreenPoint;
+  pointOffset: ScreenPoint;
+  hasMoved: boolean;
+}
+
+interface InclineLengthGesture {
+  pointerId: number;
+  inclineId: string;
+  startPoint: ScreenPoint;
+  initialLength: number;
+  direction: Incline["direction"];
+  lastLength: number;
+}
+
 interface HotbarDragGesture {
   pointerId: number;
   startPoint: ScreenPoint;
   isDragging: boolean;
   preview: HTMLElement | null;
+  kind: "particle" | "incline";
+  source: HTMLElement;
 }
 
 const PAN_THRESHOLD_PX = 3;
@@ -53,8 +119,36 @@ const PAN_THRESHOLD_PX = 3;
 export function attachCanvasInteraction(options: InteractionOptions): () => void {
   let panGesture: PanGesture | null = null;
   let particleDragGesture: ParticleDragGesture | null = null;
+  let inclineDragGesture: InclineDragGesture | null = null;
+  let inclineLengthGesture: InclineLengthGesture | null = null;
   let hotbarDragGesture: HotbarDragGesture | null = null;
   let suppressNextSourceClick = false;
+
+  const updateInclineLengthControlHover = (
+    point: ScreenPoint | null,
+  ): void => {
+    let hoveringControl = false;
+    if (point && options.getTool() === "select") {
+      const selectedInclineId = options.getSelectedInclineId();
+      const selectedIncline = selectedInclineId
+        ? options.getInclines().find(
+            (incline) => incline.id === selectedInclineId,
+          )
+        : undefined;
+      hoveringControl = selectedIncline !== undefined &&
+        hitTestInclineLengthControl(
+          point,
+          calculateInclineLengthControlGeometry(
+            selectedIncline,
+            options.getCamera(),
+          ),
+        ) !== null;
+    }
+    options.canvas.classList.toggle(
+      "is-hovering-incline-length-control",
+      hoveringControl,
+    );
+  };
 
   const startPan = (
     event: PointerEvent,
@@ -62,6 +156,7 @@ export function attachCanvasInteraction(options: InteractionOptions): () => void
     clearsSelectionOnClick: boolean,
   ): void => {
     event.preventDefault();
+    updateInclineLengthControlHover(null);
     panGesture = {
       pointerId: event.pointerId,
       lastPoint: point,
@@ -82,9 +177,61 @@ export function attachCanvasInteraction(options: InteractionOptions): () => void
     }
 
     if (event.button !== 0) return;
+    updateInclineLengthControlHover(pointer);
 
-    if (options.getTool() === "particle") {
-      options.onPlace(getPlacement(pointer, options, true));
+    if (options.getTool() === "select") {
+      const selectedInclineId = options.getSelectedInclineId();
+      const selectedIncline = selectedInclineId
+        ? options.getInclines().find((incline) => incline.id === selectedInclineId)
+        : undefined;
+      if (selectedIncline) {
+        const target = hitTestInclineLengthControl(
+          pointer,
+          calculateInclineLengthControlGeometry(
+            selectedIncline,
+            options.getCamera(),
+          ),
+        );
+        if (target === "decrease" || target === "increase") {
+          const length = stepInclineHorizontalLength(
+            selectedIncline.horizontalLength,
+            target,
+          );
+          if (
+            length !== selectedIncline.horizontalLength &&
+            isInclineLengthValid(selectedIncline, length, options)
+          ) {
+            options.onResizeIncline(selectedIncline.id, length);
+          }
+          event.preventDefault();
+          return;
+        }
+        if (target === "handle") {
+          event.preventDefault();
+          inclineLengthGesture = {
+            pointerId: event.pointerId,
+            inclineId: selectedIncline.id,
+            startPoint: pointer,
+            initialLength: selectedIncline.horizontalLength,
+            direction: selectedIncline.direction,
+            lastLength: selectedIncline.horizontalLength,
+          };
+          options.canvas.setPointerCapture(event.pointerId);
+          options.canvas.classList.add("is-resizing-incline");
+          return;
+        }
+      }
+    }
+
+    if (options.getTool() === "particle" || options.getTool() === "incline") {
+      if (options.getTool() === "particle") {
+        options.onPlace(getParticlePlacement(pointer, options, true));
+      } else {
+        const position = getPlacement(pointer, options, true);
+        if (isInclinePlacementValid(position, options)) {
+          options.onPlaceIncline(position);
+        }
+      }
       return;
     }
 
@@ -93,7 +240,29 @@ export function attachCanvasInteraction(options: InteractionOptions): () => void
       pointer,
       particleStates,
       options.getCamera(),
+      (particleId) => {
+        const scene = options.getScene();
+        const particle = scene.particles.find(
+          (candidate) => candidate.id === particleId,
+        );
+        return {
+          shape: particle?.shape ?? "circle",
+          incline: particle?.shape === "square"
+            ? getParticleForceContactDisplay(
+                scene,
+                particle,
+                options.getCurrentTime(),
+              ).incline
+            : null,
+        };
+      },
     );
+
+    if (options.getStringConnectionSourceId()) {
+      options.onStringConnectionTarget(hitParticleId);
+      event.preventDefault();
+      return;
+    }
 
     if (hitParticleId) {
       options.onSelect(hitParticleId);
@@ -116,7 +285,49 @@ export function attachCanvasInteraction(options: InteractionOptions): () => void
         preview: null,
       };
       options.canvas.setPointerCapture(event.pointerId);
-    } else if (
+      return;
+    } else {
+      const stringId = hitTestStrings(
+        pointer,
+        options.getScene(),
+        particleStates,
+        options.getCamera(),
+      );
+      if (stringId) {
+        options.onSelectString(stringId);
+        return;
+      }
+      const inclineId = hitTestInclines(
+        pointer,
+        options.getInclines(),
+        options.getCamera(),
+      );
+      if (inclineId) {
+        options.onSelectIncline(inclineId);
+        const incline = options.getInclines().find(
+          (candidate) => candidate.id === inclineId,
+        );
+        if (!incline) return;
+        const lowerEndpoint = worldToScreen(
+          incline.anchor,
+          options.getCamera(),
+        );
+        inclineDragGesture = {
+          pointerId: event.pointerId,
+          inclineId,
+          startPoint: pointer,
+          pointOffset: {
+            x: pointer.x - lowerEndpoint.x,
+            y: pointer.y - lowerEndpoint.y,
+          },
+          hasMoved: false,
+        };
+        options.canvas.setPointerCapture(event.pointerId);
+        return;
+      }
+    }
+
+    if (
       options.isGroundEnabled() &&
       isGroundHit(pointer, options.getCamera(), options.getGroundHeight())
     ) {
@@ -127,6 +338,28 @@ export function attachCanvasInteraction(options: InteractionOptions): () => void
   };
 
   const handlePointerMove = (event: PointerEvent): void => {
+    if (inclineLengthGesture?.pointerId === event.pointerId) {
+      const pointer = getCanvasPoint(event, options.canvas);
+      const incline = options.getInclines().find(
+        (candidate) => candidate.id === inclineLengthGesture?.inclineId,
+      );
+      if (!incline) return;
+      const length = calculateDraggedInclineHorizontalLength(
+        inclineLengthGesture.initialLength,
+        pointer.x - inclineLengthGesture.startPoint.x,
+        options.getCamera().pixelsPerMetre,
+        inclineLengthGesture.direction,
+      );
+      if (
+        length !== inclineLengthGesture.lastLength &&
+        isInclineLengthValid(incline, length, options)
+      ) {
+        inclineLengthGesture.lastLength = length;
+        options.onResizeIncline(incline.id, length);
+      }
+      return;
+    }
+
     if (particleDragGesture?.pointerId === event.pointerId) {
       const pointer = getCanvasPoint(event, options.canvas);
       const distance = Math.hypot(
@@ -140,7 +373,12 @@ export function attachCanvasInteraction(options: InteractionOptions): () => void
         particleDragGesture.hasMoved = true;
         options.onParticleDragChange(particleDragGesture.particleId);
         particleDragGesture.preview = document.createElement("span");
-        particleDragGesture.preview.className = "particle-drag-preview";
+        const draggedParticle = options.getScene().particles.find(
+          (particle) => particle.id === particleDragGesture?.particleId,
+        );
+        particleDragGesture.preview.className = getParticleDragPreviewClassName(
+          draggedParticle?.shape ?? "circle",
+        );
         document.body.append(particleDragGesture.preview);
       }
 
@@ -151,34 +389,120 @@ export function attachCanvasInteraction(options: InteractionOptions): () => void
         x: pointer.x - particleDragGesture.pointOffset.x,
         y: pointer.y - particleDragGesture.pointOffset.y,
       };
-      const freePosition = getPlacement(targetPoint, options, false);
+      const freePosition = getParticlePlacement(targetPoint, options, false);
+      const snappedPosition = getParticlePlacement(targetPoint, options, true);
+      const candidatePosition = options.resolveParticleMove(
+        particleDragGesture.particleId,
+        freePosition,
+        snappedPosition,
+      );
 
       if (particleDragGesture.preview) {
-        updateWorldDragPreview(particleDragGesture.preview, freePosition, options);
-      }
-
-      if (!isOverDeleteTarget) {
-        options.onMoveParticle(
-          particleDragGesture.particleId,
+        particleDragGesture.preview.classList.toggle(
+          "is-invalid",
+          !isOverDeleteTarget && !options.isParticleMoveValid(
+            particleDragGesture.particleId,
+            candidatePosition,
+          ),
+        );
+        updateWorldDragPreview(
+          particleDragGesture.preview,
           freePosition,
+          options,
         );
       }
       return;
     }
 
-    if (!panGesture || panGesture.pointerId !== event.pointerId) return;
+    if (inclineDragGesture?.pointerId === event.pointerId) {
+      const pointer = getCanvasPoint(event, options.canvas);
+      const distance = Math.hypot(
+        pointer.x - inclineDragGesture.startPoint.x,
+        pointer.y - inclineDragGesture.startPoint.y,
+      );
+      if (!inclineDragGesture.hasMoved && distance < PAN_THRESHOLD_PX) return;
+      if (!inclineDragGesture.hasMoved) {
+        inclineDragGesture.hasMoved = true;
+      }
+      options.canvas.classList.add("is-dragging-incline");
+      const isOverDeleteTarget = isPointerOverElement(event, options.deleteTarget);
+      options.deleteTarget.classList.toggle("is-drop-target", isOverDeleteTarget);
+      if (!isOverDeleteTarget) {
+        const targetPoint = {
+          x: pointer.x - inclineDragGesture.pointOffset.x,
+          y: pointer.y - inclineDragGesture.pointOffset.y,
+        };
+        const position = getPlacement(targetPoint, options, false);
+        options.onPlacementPreviewChange({
+          kind: "incline",
+          position,
+          isValid: isInclinePlacementValid(
+            position,
+            options,
+            inclineDragGesture.inclineId,
+          ),
+          sourceInclineId: inclineDragGesture.inclineId,
+        });
+      }
+      return;
+    }
 
-    const pointer = getCanvasPoint(event, options.canvas);
-    const delta = {
-      x: pointer.x - panGesture.lastPoint.x,
-      y: pointer.y - panGesture.lastPoint.y,
-    };
-    panGesture.totalDistance += Math.hypot(delta.x, delta.y);
-    panGesture.lastPoint = pointer;
-    options.onPan(delta);
+    if (panGesture?.pointerId === event.pointerId) {
+      const pointer = getCanvasPoint(event, options.canvas);
+      const delta = {
+        x: pointer.x - panGesture.lastPoint.x,
+        y: pointer.y - panGesture.lastPoint.y,
+      };
+      panGesture.totalDistance += Math.hypot(delta.x, delta.y);
+      panGesture.lastPoint = pointer;
+      options.onPan(delta);
+      return;
+    }
+
+    updateInclineLengthControlHover(getCanvasPoint(event, options.canvas));
+
+    if (options.getStringConnectionSourceId()) {
+      options.onStringConnectionPointerMove(
+        screenToWorld(getCanvasPoint(event, options.canvas), options.getCamera()),
+      );
+      options.onPlacementPreviewChange(null);
+      return;
+    }
+
+    const placementTool = options.getTool();
+    if (placementTool === "particle" || placementTool === "incline") {
+      const pointer = getCanvasPoint(event, options.canvas);
+      if (placementTool === "particle") {
+        options.onPlacementPreviewChange({
+          kind: "particle",
+          position: getParticlePlacement(pointer, options, true),
+        });
+      } else {
+        const position = getPlacement(pointer, options, true);
+        options.onPlacementPreviewChange({
+          kind: "incline",
+          position,
+          isValid: isInclinePlacementValid(position, options),
+        });
+      }
+      return;
+    }
+    options.onPlacementPreviewChange(null);
   };
 
   const finishPointerGesture = (event: PointerEvent): void => {
+    if (inclineLengthGesture?.pointerId === event.pointerId) {
+      inclineLengthGesture = null;
+      options.canvas.classList.remove("is-resizing-incline");
+      releasePointer(options.canvas, event.pointerId);
+      updateInclineLengthControlHover(
+        event.type === "pointerup"
+          ? getCanvasPoint(event, options.canvas)
+          : null,
+      );
+      return;
+    }
+
     if (particleDragGesture?.pointerId === event.pointerId) {
       const shouldDelete =
         event.type === "pointerup" &&
@@ -196,9 +520,15 @@ export function attachCanvasInteraction(options: InteractionOptions): () => void
           x: pointer.x - particleDragGesture.pointOffset.x,
           y: pointer.y - particleDragGesture.pointOffset.y,
         };
+        const freePosition = getParticlePlacement(targetPoint, options, false);
+        const defaultPosition = getParticlePlacement(targetPoint, options, true);
         options.onMoveParticle(
           draggedParticleId,
-          getPlacement(targetPoint, options, true),
+          options.resolveParticleMove(
+            draggedParticleId,
+            freePosition,
+            defaultPosition,
+          ),
         );
       }
 
@@ -210,6 +540,36 @@ export function attachCanvasInteraction(options: InteractionOptions): () => void
       releasePointer(options.canvas, event.pointerId);
 
       if (shouldDelete) options.onDeleteParticle(draggedParticleId);
+      return;
+    }
+
+    if (inclineDragGesture?.pointerId === event.pointerId) {
+      const draggedInclineId = inclineDragGesture.inclineId;
+      const shouldDelete =
+        event.type === "pointerup" &&
+        inclineDragGesture.hasMoved &&
+        isPointerOverElement(event, options.deleteTarget);
+      const shouldSnap =
+        event.type === "pointerup" &&
+        inclineDragGesture.hasMoved &&
+        !shouldDelete;
+      if (shouldSnap) {
+        const pointer = getCanvasPoint(event, options.canvas);
+        const targetPoint = {
+          x: pointer.x - inclineDragGesture.pointOffset.x,
+          y: pointer.y - inclineDragGesture.pointOffset.y,
+        };
+        const position = getPlacement(targetPoint, options, true);
+        if (isInclinePlacementValid(position, options, draggedInclineId)) {
+          options.onMoveIncline(draggedInclineId, position);
+        }
+      }
+      options.onPlacementPreviewChange(null);
+      inclineDragGesture = null;
+      options.canvas.classList.remove("is-dragging-incline");
+      options.deleteTarget.classList.remove("is-drop-target");
+      releasePointer(options.canvas, event.pointerId);
+      if (shouldDelete) options.onDeleteIncline(draggedInclineId);
       return;
     }
 
@@ -233,7 +593,11 @@ export function attachCanvasInteraction(options: InteractionOptions): () => void
     options.onZoom(pointer, Math.exp(-event.deltaY * 0.0015));
   };
 
-  const handleSourcePointerDown = (event: PointerEvent): void => {
+  const handleSourcePointerDown = (
+    event: PointerEvent,
+    kind: "particle" | "incline",
+    source: HTMLElement,
+  ): void => {
     if (event.button !== 0) return;
 
     hotbarDragGesture = {
@@ -241,8 +605,10 @@ export function attachCanvasInteraction(options: InteractionOptions): () => void
       startPoint: { x: event.clientX, y: event.clientY },
       isDragging: false,
       preview: null,
+      kind,
+      source,
     };
-    options.particleSource.setPointerCapture(event.pointerId);
+    source.setPointerCapture(event.pointerId);
   };
 
   const handleSourcePointerMove = (event: PointerEvent): void => {
@@ -257,10 +623,14 @@ export function attachCanvasInteraction(options: InteractionOptions): () => void
 
     if (!hotbarDragGesture.isDragging) {
       hotbarDragGesture.isDragging = true;
-      hotbarDragGesture.preview = document.createElement("span");
-      hotbarDragGesture.preview.className = "particle-drag-preview";
+      hotbarDragGesture.preview = hotbarDragGesture.kind === "particle"
+        ? document.createElement("span")
+        : createInclineDragPreviewElement();
+      hotbarDragGesture.preview.className = hotbarDragGesture.kind === "particle"
+        ? "particle-drag-preview"
+        : "incline-drag-preview";
       document.body.append(hotbarDragGesture.preview);
-      options.particleSource.classList.add("is-dragging");
+      hotbarDragGesture.source.classList.add("is-dragging");
     }
 
     event.preventDefault();
@@ -268,28 +638,53 @@ export function attachCanvasInteraction(options: InteractionOptions): () => void
     const canvasBounds = options.canvas.getBoundingClientRect();
     const isOverCanvas = isPointerOverElement(event, options.canvas);
     let previewCentre = { x: event.clientX, y: event.clientY };
+    let inclinePlacementValid = true;
 
     if (isOverCanvas) {
       const canvasPoint = getCanvasPoint(event, options.canvas);
-      const freePosition = getPlacement(canvasPoint, options, false);
+      const freePosition = hotbarDragGesture.kind === "particle"
+        ? getParticlePlacement(canvasPoint, options, false)
+        : getPlacement(canvasPoint, options, false);
       const mathematicalPoint = worldToScreen(freePosition, camera);
-      const geometry = getRenderedParticleGeometry(mathematicalPoint, camera);
-
-      previewCentre = {
-        x: canvasBounds.left + geometry.centre.x,
-        y: canvasBounds.top + geometry.centre.y,
-      };
+      if (hotbarDragGesture.kind === "particle") {
+        const geometry = getRenderedParticleGeometry(mathematicalPoint, camera);
+        previewCentre = {
+          x: canvasBounds.left + geometry.centre.x,
+          y: canvasBounds.top + geometry.centre.y,
+        };
+      } else {
+        inclinePlacementValid = isInclinePlacementValid(
+          freePosition,
+          options,
+        );
+        previewCentre = {
+          x: canvasBounds.left + mathematicalPoint.x,
+          y: canvasBounds.top + mathematicalPoint.y,
+        };
+      }
       options.canvas.classList.add("is-drop-target");
     } else {
       options.canvas.classList.remove("is-drop-target");
     }
 
     if (hotbarDragGesture.preview) {
-      updateDragPreview(
-        hotbarDragGesture.preview,
-        previewCentre,
-        camera.pixelsPerMetre,
-      );
+      if (hotbarDragGesture.kind === "particle") {
+        updateDragPreview(
+          hotbarDragGesture.preview,
+          previewCentre,
+          camera.pixelsPerMetre,
+        );
+      } else {
+        hotbarDragGesture.preview.classList.toggle(
+          "is-invalid",
+          isOverCanvas && !inclinePlacementValid,
+        );
+        updateInclineDragPreview(
+          hotbarDragGesture.preview,
+          previewCentre,
+          camera.pixelsPerMetre,
+        );
+      }
     }
   };
 
@@ -297,21 +692,34 @@ export function attachCanvasInteraction(options: InteractionOptions): () => void
     if (!hotbarDragGesture || hotbarDragGesture.pointerId !== event.pointerId) return;
 
     const completedDrag = hotbarDragGesture.isDragging;
+    const { kind, source } = hotbarDragGesture;
     const droppedPosition =
       event.type === "pointerup" && isPointerOverElement(event, options.canvas)
-        ? getPlacement(getCanvasPoint(event, options.canvas), options, true)
+        ? kind === "particle"
+          ? getParticlePlacement(
+              getCanvasPoint(event, options.canvas),
+              options,
+              true,
+            )
+          : getPlacement(getCanvasPoint(event, options.canvas), options, true)
         : null;
+    const droppedPositionIsValid = kind !== "incline" ||
+      droppedPosition === null ||
+      isInclinePlacementValid(droppedPosition, options);
 
     hotbarDragGesture.preview?.remove();
     hotbarDragGesture = null;
-    options.particleSource.classList.remove("is-dragging");
+    source.classList.remove("is-dragging");
     options.canvas.classList.remove("is-drop-target");
-    releasePointer(options.particleSource, event.pointerId);
+    releasePointer(source, event.pointerId);
 
     if (completedDrag) {
       event.preventDefault();
       suppressNextSourceClick = true;
-      if (droppedPosition) options.onPlace(droppedPosition);
+      if (droppedPosition && droppedPositionIsValid) {
+        if (kind === "particle") options.onPlace(droppedPosition);
+        else options.onPlaceIncline(droppedPosition);
+      }
     }
   };
 
@@ -323,6 +731,14 @@ export function attachCanvasInteraction(options: InteractionOptions): () => void
   };
 
   const preventContextMenu = (event: MouseEvent): void => event.preventDefault();
+  const clearPlacementPreview = (): void => {
+    if (inclineDragGesture) return;
+    options.onPlacementPreviewChange(null);
+    if (options.getStringConnectionSourceId()) {
+      options.onStringConnectionPointerMove(null);
+    }
+    if (!inclineLengthGesture) updateInclineLengthControlHover(null);
+  };
 
   options.canvas.addEventListener("pointerdown", handlePointerDown);
   options.canvas.addEventListener("pointermove", handlePointerMove);
@@ -330,11 +746,21 @@ export function attachCanvasInteraction(options: InteractionOptions): () => void
   options.canvas.addEventListener("pointercancel", finishPointerGesture);
   options.canvas.addEventListener("wheel", handleWheel, { passive: false });
   options.canvas.addEventListener("contextmenu", preventContextMenu);
-  options.particleSource.addEventListener("pointerdown", handleSourcePointerDown);
+  options.canvas.addEventListener("pointerleave", clearPlacementPreview);
+  const handleParticleSourcePointerDown = (event: PointerEvent) =>
+    handleSourcePointerDown(event, "particle", options.particleSource);
+  const handleInclineSourcePointerDown = (event: PointerEvent) =>
+    handleSourcePointerDown(event, "incline", options.inclineSource);
+  options.particleSource.addEventListener("pointerdown", handleParticleSourcePointerDown);
+  options.inclineSource.addEventListener("pointerdown", handleInclineSourcePointerDown);
   options.particleSource.addEventListener("pointermove", handleSourcePointerMove);
+  options.inclineSource.addEventListener("pointermove", handleSourcePointerMove);
   options.particleSource.addEventListener("pointerup", finishSourcePointerGesture);
+  options.inclineSource.addEventListener("pointerup", finishSourcePointerGesture);
   options.particleSource.addEventListener("pointercancel", finishSourcePointerGesture);
+  options.inclineSource.addEventListener("pointercancel", finishSourcePointerGesture);
   options.particleSource.addEventListener("click", suppressSourceClickAfterDrag, true);
+  options.inclineSource.addEventListener("click", suppressSourceClickAfterDrag, true);
 
   return () => {
     options.canvas.removeEventListener("pointerdown", handlePointerDown);
@@ -343,12 +769,120 @@ export function attachCanvasInteraction(options: InteractionOptions): () => void
     options.canvas.removeEventListener("pointercancel", finishPointerGesture);
     options.canvas.removeEventListener("wheel", handleWheel);
     options.canvas.removeEventListener("contextmenu", preventContextMenu);
-    options.particleSource.removeEventListener("pointerdown", handleSourcePointerDown);
+    options.canvas.removeEventListener("pointerleave", clearPlacementPreview);
+    options.particleSource.removeEventListener("pointerdown", handleParticleSourcePointerDown);
+    options.inclineSource.removeEventListener("pointerdown", handleInclineSourcePointerDown);
     options.particleSource.removeEventListener("pointermove", handleSourcePointerMove);
+    options.inclineSource.removeEventListener("pointermove", handleSourcePointerMove);
     options.particleSource.removeEventListener("pointerup", finishSourcePointerGesture);
+    options.inclineSource.removeEventListener("pointerup", finishSourcePointerGesture);
     options.particleSource.removeEventListener("pointercancel", finishSourcePointerGesture);
+    options.inclineSource.removeEventListener("pointercancel", finishSourcePointerGesture);
     options.particleSource.removeEventListener("click", suppressSourceClickAfterDrag, true);
+    options.inclineSource.removeEventListener("click", suppressSourceClickAfterDrag, true);
+    options.canvas.classList.remove("is-hovering-incline-length-control");
+    options.canvas.classList.remove("is-resizing-incline");
   };
+}
+
+function createInclineDragPreviewElement(): HTMLSpanElement {
+  const preview = document.createElement("span");
+  const svgNamespace = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNamespace, "svg");
+  svg.setAttribute("viewBox", "0 0 100 100");
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("aria-hidden", "true");
+  const triangle = document.createElementNS(svgNamespace, "polygon");
+  triangle.classList.add("incline-drag-preview-surface");
+  triangle.setAttribute("vector-effect", "non-scaling-stroke");
+  const angleArc = document.createElementNS(svgNamespace, "path");
+  angleArc.classList.add("incline-drag-preview-angle");
+  angleArc.setAttribute("vector-effect", "non-scaling-stroke");
+  const angleLabel = document.createElementNS(svgNamespace, "text");
+  angleLabel.classList.add("incline-drag-preview-angle-label");
+  angleLabel.textContent = `${DEFAULT_INCLINE_ANGLE_DEGREES}°`;
+  svg.appendChild(triangle);
+  svg.appendChild(angleArc);
+  svg.appendChild(angleLabel);
+  preview.appendChild(svg);
+  return preview;
+}
+
+function updateInclineDragPreview(
+  preview: HTMLElement,
+  lowerEndpoint: ScreenPoint,
+  pixelsPerMetre: number,
+): void {
+  const geometry = calculateInclineDragPreviewGeometry(
+    lowerEndpoint,
+    pixelsPerMetre,
+  );
+  preview.style.width = `${geometry.width}px`;
+  preview.style.height = `${geometry.height}px`;
+  preview.style.left = `${geometry.left}px`;
+  preview.style.top = `${geometry.top}px`;
+  const svg = preview.querySelector<SVGSVGElement>("svg");
+  const triangle = preview.querySelector<SVGPolygonElement>(
+    ".incline-drag-preview-surface",
+  );
+  const angleArc = preview.querySelector<SVGPathElement>(
+    ".incline-drag-preview-angle",
+  );
+  const angleLabel = preview.querySelector<SVGTextElement>(
+    ".incline-drag-preview-angle-label",
+  );
+  if (!svg || !triangle || !angleArc || !angleLabel) return;
+  svg.setAttribute("viewBox", `0 0 ${geometry.width} ${geometry.height}`);
+  triangle.setAttribute(
+    "points",
+    `0,${geometry.height} ${geometry.width},0 ${geometry.width},${geometry.height}`,
+  );
+  angleLabel.style.fontSize =
+    `${calculateInitialVelocityTextSize(pixelsPerMetre)}px`;
+  const annotation = calculateInclineAngleAnnotationGeometry(
+    { x: 0, y: geometry.height },
+    "rises-right",
+    DEFAULT_INCLINE_ANGLE_DEGREES,
+    pixelsPerMetre,
+    angleLabel.getComputedTextLength(),
+    DEFAULT_INCLINE_HORIZONTAL_LENGTH,
+  );
+  const start = {
+    x: Math.cos(annotation.startAngle) * annotation.arcRadius,
+    y: geometry.height + Math.sin(annotation.startAngle) * annotation.arcRadius,
+  };
+  const end = {
+    x: Math.cos(annotation.endAngle) * annotation.arcRadius,
+    y: geometry.height + Math.sin(annotation.endAngle) * annotation.arcRadius,
+  };
+  angleArc.setAttribute(
+    "d",
+    `M ${start.x} ${start.y} A ${annotation.arcRadius} ${annotation.arcRadius} 0 0 0 ${end.x} ${end.y}`,
+  );
+  angleLabel.setAttribute("x", String(annotation.labelPosition.x));
+  angleLabel.setAttribute("y", String(annotation.labelPosition.y));
+}
+
+export function calculateInclineDragPreviewGeometry(
+  lowerEndpoint: ScreenPoint,
+  pixelsPerMetre: number,
+): { left: number; top: number; width: number; height: number } {
+  const scale = Math.max(0, pixelsPerMetre);
+  const width = DEFAULT_INCLINE_HORIZONTAL_LENGTH * scale;
+  const height = DEFAULT_INCLINE_HORIZONTAL_LENGTH *
+    Math.tan(DEFAULT_INCLINE_ANGLE_DEGREES * Math.PI / 180) * scale;
+  return {
+    left: lowerEndpoint.x,
+    top: lowerEndpoint.y - height,
+    width,
+    height,
+  };
+}
+
+export function getParticleDragPreviewClassName(shape: ParticleShape): string {
+  return shape === "square"
+    ? "particle-drag-preview is-square"
+    : "particle-drag-preview";
 }
 
 function updateDragPreview(
@@ -418,6 +952,57 @@ function getPlacement(
   }
 
   return snappedPosition;
+}
+
+function getParticlePlacement(
+  pointer: ScreenPoint,
+  options: InteractionOptions,
+  snapToGrid: boolean,
+): Vec2 {
+  const inclines = options.getInclines();
+  const freePosition = resolveParticlePlacementAgainstInclines(
+    getPlacement(pointer, options, false),
+    inclines,
+  );
+  if (snapToGrid) {
+    const inclineGridSnap = findInclineGridSnap(freePosition, inclines);
+    if (inclineGridSnap) return inclineGridSnap.position;
+  }
+  return snapToGrid
+    ? resolveParticlePlacementAgainstInclines(
+        getPlacement(pointer, options, true),
+        inclines,
+      )
+    : freePosition;
+}
+
+function isInclinePlacementValid(
+  position: Vec2,
+  options: InteractionOptions,
+  sourceInclineId?: string,
+): boolean {
+  const sourceIncline = sourceInclineId
+    ? options.getInclines().find((incline) => incline.id === sourceInclineId)
+    : undefined;
+  const candidate = sourceIncline
+    ? { ...sourceIncline, anchor: { ...position } }
+    : createIncline("placement-preview", position);
+  return canPlaceIncline(candidate, options.getInclines());
+}
+
+function isInclineLengthValid(
+  incline: Incline,
+  horizontalLength: number,
+  options: InteractionOptions,
+): boolean {
+  return canPlaceIncline(
+    {
+      ...incline,
+      horizontalLength,
+      horizontalLengthInput: String(horizontalLength),
+    },
+    options.getInclines(),
+  );
 }
 
 function getCanvasPoint(

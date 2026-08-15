@@ -1,6 +1,7 @@
 import type { ParticleState } from "../model/Particle";
 import type { Scene } from "../model/Scene";
-import type { Vec2 } from "../math/Vec2";
+import { createIncline, type Incline } from "../model/Incline";
+import type { ScreenPoint, Vec2 } from "../math/Vec2";
 import {
   calculateGreatestHeightHorizontalGeometry,
   type GreatestHeightMeasurement,
@@ -21,13 +22,18 @@ import {
 import {
   groupParticlesByPosition,
   getRenderedParticleGeometry,
+  getRenderedParticleShapeGeometry,
 } from "./particleGeometry";
 import {
   getSelectionWhiteMix,
+  MAXIMUM_SELECTION_WHITE_MIX,
   mixColourWithWhite,
 } from "./selectionPulse";
 import { tokenizeMathText, type MathToken } from "../ui/mathMarkup";
-import { getExactValueTooltip } from "../ui/exactValueTooltip";
+import {
+  getExactValueTooltip,
+  isSymbolicExactDisplay,
+} from "../ui/exactValueTooltip";
 import {
   FORCE_ARROW_LENGTH_METRES,
   FORCE_ARROW_LINE_DASH,
@@ -39,7 +45,24 @@ import {
   type AngleForceAnnotation,
   type ComponentForceAnnotation,
 } from "./forceAnnotation";
-import { analyseGroundContactForces } from "../dynamics/groundContact";
+import { createInclineNormalReactionDisplay } from "../dynamics/inclineForceDisplay";
+import type { NormalReactionDisplayInput } from "../dynamics/forceDisplay";
+import type { FrictionDisplayInput } from "../dynamics/forceDisplay";
+import { createFrictionDisplay } from "../dynamics/frictionDisplay";
+import {
+  getInclineGeometry,
+  isPointOnInclineSegment,
+} from "../geometry/inclineGeometry";
+import type { PlacementPreview } from "./placementPreview";
+import { getStringRenderSegment } from "./stringGeometry";
+import type { TensionDisplayInput } from "../dynamics/forceDisplay";
+import { calculateConnectedSystemTrajectory } from "../physics/connectedTrajectory";
+import { calculateSurfaceTrajectory } from "../physics/surfaceTrajectory";
+import { calculateInclineWeightComponentVectors } from "./inclineWeightComponents";
+import {
+  calculateInclineLengthControlGeometry,
+  type InclineLengthControlGeometry,
+} from "./inclineLengthControl";
 
 export interface CanvasExactValueHoverTarget {
   left: number;
@@ -47,6 +70,42 @@ export interface CanvasExactValueHoverTarget {
   right: number;
   bottom: number;
   tooltip: string;
+  segment?: {
+    start: Vec2;
+    end: Vec2;
+    radius: number;
+  };
+}
+
+export interface CanvasTooltipExclusion {
+  centre: Vec2;
+  radius: number;
+}
+
+interface CanvasAnnotationBounds {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+export interface CanvasMathLabel {
+  text: string;
+  position: Vec2;
+  fontSize: number;
+  colour: string;
+}
+
+export interface CanvasRenderResult {
+  hoverTargets: CanvasExactValueHoverTarget[];
+  mathLabels: CanvasMathLabel[];
+  tooltipExclusions?: CanvasTooltipExclusion[];
+}
+
+export interface StringConnectionPreview {
+  sourceParticleId: string;
+  pointer: Vec2;
+  validTargetIds: readonly string[];
 }
 
 export function render(
@@ -55,11 +114,15 @@ export function render(
   particleStates: ParticleState[],
   selectedParticleId: string | null,
   groundSelected: boolean,
+  selectedInclineId: string | null,
   camera: Camera,
   currentTime: number,
   animationTimestamp: number,
   heightMeasurements: GreatestHeightMeasurement[],
-): CanvasExactValueHoverTarget[] {
+  placementPreview: PlacementPreview | null = null,
+  selectedStringId: string | null = null,
+  stringConnectionPreview: StringConnectionPreview | null = null,
+): CanvasRenderResult {
   context.clearRect(0, 0, camera.viewportWidth, camera.viewportHeight);
   context.fillStyle = "#f8f7f1";
   context.fillRect(0, 0, camera.viewportWidth, camera.viewportHeight);
@@ -78,23 +141,77 @@ export function render(
     );
   }
 
-  const particleGroups = groupParticlesByPosition(particleStates);
+  const replacedInclineId = placementPreview?.kind === "incline"
+    ? placementPreview.sourceInclineId
+    : undefined;
+  for (const incline of scene.inclines) {
+    if (incline.id === replacedInclineId) continue;
+    renderIncline(
+      context,
+      incline,
+      camera,
+      incline.id === selectedInclineId ? selectionWhiteMix : 0,
+    );
+  }
+  if (placementPreview?.kind === "incline") {
+    renderPlacementPreview(context, placementPreview, camera, scene.inclines);
+  }
 
-  const exactValueHoverTargets = shouldRenderForceAnnotations(scene)
+  const displayedParticleStates = translateInclineContactParticleStates(
+    scene,
+    particleStates,
+    placementPreview,
+  );
+  const particleGroups = groupParticlesByPosition(displayedParticleStates);
+  const hoveredStringTargetId = stringConnectionPreview
+    ? getHoveredStringTargetId(
+        stringConnectionPreview,
+        displayedParticleStates,
+        camera,
+      )
+    : null;
+  const invalidStringTargetId = hoveredStringTargetId &&
+      stringConnectionPreview &&
+      !stringConnectionPreview.validTargetIds.includes(hoveredStringTargetId)
+    ? hoveredStringTargetId
+    : null;
+
+  renderStrings(
+    context,
+    scene,
+    displayedParticleStates,
+    camera,
+    selectedStringId,
+    selectionWhiteMix,
+  );
+  if (stringConnectionPreview) {
+    renderStringConnectionPreview(
+      context,
+      displayedParticleStates,
+      camera,
+      stringConnectionPreview,
+    );
+  }
+
+  const forceAnnotationResult = shouldRenderForceAnnotations(scene)
     ? renderForceAnnotations(
         context,
         scene,
-        particleStates,
+        displayedParticleStates,
         camera,
         currentTime,
+        selectedParticleId,
+        selectedStringId,
+        selectionWhiteMix,
       )
-    : [];
+    : { hoverTargets: [], mathLabels: [] };
+  const exactValueHoverTargets = forceAnnotationResult.hoverTargets;
 
   if (currentTime === 0) {
     renderInitialVelocityAnnotations(
       context,
       scene,
-      particleStates,
+      displayedParticleStates,
       camera,
     );
   }
@@ -107,28 +224,513 @@ export function render(
 
   for (const coincidentParticles of particleGroups) {
     const particle = coincidentParticles[coincidentParticles.length - 1];
+    const particleModel = scene.particles.find(
+      (candidate) => candidate.id === particle.id,
+    );
+    const activeIncline = particleModel?.shape === "square"
+      ? getParticleForceContactDisplay(scene, particleModel, currentTime).incline
+      : null;
+    const hoveredAsStringTarget = coincidentParticles.some(
+      (candidate) => candidate.id === hoveredStringTargetId,
+    );
+    const invalidAsStringTarget = coincidentParticles.some(
+      (candidate) => candidate.id === invalidStringTargetId,
+    );
     renderParticle(
       context,
       particle,
       coincidentParticles.length,
       camera,
-      coincidentParticles.some((candidate) => candidate.id === selectedParticleId)
-        ? selectionWhiteMix
-        : 0,
+      hoveredAsStringTarget && !invalidAsStringTarget
+        ? MAXIMUM_SELECTION_WHITE_MIX
+        : coincidentParticles.some(
+            (candidate) => candidate.id === selectedParticleId,
+          )
+          ? selectionWhiteMix
+          : 0,
+      particleModel?.shape ?? "circle",
+      activeIncline,
+      invalidAsStringTarget,
     );
+  }
+  if (placementPreview?.kind === "particle") {
+    renderPlacementPreview(context, placementPreview, camera, scene.inclines);
   }
 
   if (shouldRenderForceAnnotations(scene)) {
     renderZeroResultantMarkers(
       context,
       scene,
-      particleStates,
+      displayedParticleStates,
       camera,
       currentTime,
     );
   }
 
-  return exactValueHoverTargets;
+  const selectedIncline = scene.inclines.find(
+    (incline) => incline.id === selectedInclineId,
+  );
+  if (selectedIncline) {
+    const displayedIncline = placementPreview?.kind === "incline" &&
+        placementPreview.sourceInclineId === selectedIncline.id
+      ? { ...selectedIncline, anchor: { ...placementPreview.position } }
+      : selectedIncline;
+    renderInclineLengthControl(context, displayedIncline, camera);
+  }
+
+  return {
+    hoverTargets: exactValueHoverTargets,
+    mathLabels: forceAnnotationResult.mathLabels,
+    tooltipExclusions: displayedParticleStates.map((particle) => {
+      const geometry = getRenderedParticleGeometry(
+        worldToScreen(particle.position, camera),
+        camera,
+      );
+      return { centre: geometry.centre, radius: geometry.radius };
+    }),
+  };
+}
+
+function renderStrings(
+  context: CanvasRenderingContext2D,
+  scene: Scene,
+  particleStates: readonly ParticleState[],
+  camera: Camera,
+  selectedStringId: string | null,
+  selectionWhiteMix: number,
+): void {
+  for (const string of scene.strings) {
+    const segment = getStringRenderSegment(scene, string, particleStates, camera);
+    if (!segment) continue;
+    context.save();
+    context.strokeStyle = getStringStrokeColour(
+      string.id,
+      selectedStringId,
+      selectionWhiteMix,
+    );
+    context.lineWidth = Math.max(2, Math.min(3.5, camera.pixelsPerMetre * 0.08));
+    context.lineCap = "round";
+    context.beginPath();
+    const [firstPoint, ...remainingPoints] = segment.visualPoints;
+    if (!firstPoint) {
+      context.restore();
+      continue;
+    }
+    context.moveTo(firstPoint.x, firstPoint.y);
+    for (const point of remainingPoints) context.lineTo(point.x, point.y);
+    context.stroke();
+    context.restore();
+  }
+}
+
+function renderStringConnectionPreview(
+  context: CanvasRenderingContext2D,
+  particleStates: readonly ParticleState[],
+  camera: Camera,
+  preview: StringConnectionPreview,
+): void {
+  const source = particleStates.find(
+    (particle) => particle.id === preview.sourceParticleId,
+  );
+  if (!source) return;
+  const sourcePoint = worldToScreen(source.position, camera);
+  const pointer = worldToScreen(preview.pointer, camera);
+  context.save();
+  context.strokeStyle = STRING_COLOUR;
+  context.lineWidth = 2;
+  context.setLineDash([7, 6]);
+  context.beginPath();
+  context.moveTo(sourcePoint.x, sourcePoint.y);
+  context.lineTo(pointer.x, pointer.y);
+  context.stroke();
+  context.restore();
+}
+
+export function getHoveredStringTargetId(
+  preview: StringConnectionPreview,
+  particleStates: readonly ParticleState[],
+  camera: Camera,
+): string | null {
+  const pointer = worldToScreen(preview.pointer, camera);
+  for (let index = particleStates.length - 1; index >= 0; index -= 1) {
+    const particle = particleStates[index];
+    const point = worldToScreen(particle.position, camera);
+    const { centre, radius } = getRenderedParticleGeometry(point, camera);
+    if (Math.hypot(pointer.x - centre.x, pointer.y - centre.y) <= radius + 4) {
+      return particle.id;
+    }
+  }
+  return null;
+}
+
+function mixColour(from: string, to: string, amount: number): string {
+  const safeAmount = Math.max(0, Math.min(1, amount));
+  const parse = (colour: string): [number, number, number] => [
+    Number.parseInt(colour.slice(1, 3), 16),
+    Number.parseInt(colour.slice(3, 5), 16),
+    Number.parseInt(colour.slice(5, 7), 16),
+  ];
+  const start = parse(from);
+  const end = parse(to);
+  return `rgb(${start.map((value, index) =>
+    Math.round(value + (end[index] - value) * safeAmount)
+  ).join(", ")})`;
+}
+
+const INCLINE_LENGTH_CONTROL_FILL = "#f2d45c";
+const INCLINE_LENGTH_CONTROL_STROKE = "#292d2c";
+
+function renderInclineLengthControl(
+  context: CanvasRenderingContext2D,
+  incline: Incline,
+  camera: Camera,
+): void {
+  const geometry = calculateInclineLengthControlGeometry(incline, camera);
+  context.save();
+  context.fillStyle = INCLINE_LENGTH_CONTROL_FILL;
+  context.strokeStyle = INCLINE_LENGTH_CONTROL_STROKE;
+  context.lineWidth = Math.max(2, geometry.cellSize * 0.07);
+  context.lineJoin = "round";
+
+  if (geometry.canDecrease) {
+    drawInclineLengthArrow(context, geometry, "decrease");
+  }
+  drawInclineLengthArrow(context, geometry, "increase");
+
+  context.beginPath();
+  context.arc(
+    geometry.corner.x,
+    geometry.corner.y,
+    geometry.outerRadius,
+    0,
+    Math.PI * 2,
+  );
+  context.fill();
+  context.stroke();
+  context.beginPath();
+  context.arc(
+    geometry.corner.x,
+    geometry.corner.y,
+    geometry.innerRadius,
+    0,
+    Math.PI * 2,
+  );
+  context.fill();
+  context.stroke();
+  context.restore();
+}
+
+function drawInclineLengthArrow(
+  context: CanvasRenderingContext2D,
+  geometry: InclineLengthControlGeometry,
+  direction: "decrease" | "increase",
+): void {
+  const centre = direction === "decrease"
+    ? geometry.decreaseCentre
+    : geometry.increaseCentre;
+  const sign = direction === "decrease" ? -1 : 1;
+  const length = geometry.cellSize * 0.58;
+  const tipX = centre.x + sign * length / 2;
+  const tailX = centre.x - sign * length / 2;
+  const headLength = length * 0.39;
+  const headHalfHeight = length * 0.39;
+  context.save();
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  context.beginPath();
+  context.moveTo(tailX, centre.y);
+  context.lineTo(tipX, centre.y);
+  context.moveTo(tipX - sign * headLength, centre.y - headHalfHeight);
+  context.lineTo(tipX, centre.y);
+  context.lineTo(tipX - sign * headLength, centre.y + headHalfHeight);
+  context.strokeStyle = INCLINE_LENGTH_CONTROL_STROKE;
+  context.lineWidth = Math.max(5, geometry.cellSize * 0.24);
+  context.stroke();
+  context.strokeStyle = INCLINE_LENGTH_CONTROL_FILL;
+  context.lineWidth = Math.max(2, geometry.cellSize * 0.1);
+  context.stroke();
+  context.restore();
+}
+
+export function translateInclineContactParticleStates(
+  scene: Scene,
+  particleStates: readonly ParticleState[],
+  placementPreview: PlacementPreview | null,
+): ParticleState[] {
+  if (
+    placementPreview?.kind !== "incline" ||
+    !placementPreview.sourceInclineId
+  ) {
+    return [...particleStates];
+  }
+
+  const sourceIncline = scene.inclines.find(
+    (incline) => incline.id === placementPreview.sourceInclineId,
+  );
+  if (!sourceIncline) return [...particleStates];
+
+  const offset = {
+    x: placementPreview.position.x - sourceIncline.anchor.x,
+    y: placementPreview.position.y - sourceIncline.anchor.y,
+  };
+  const associatedParticleIds = new Set(
+    scene.particles
+      .filter(
+        (particle) =>
+          particle.initialInclineContact?.inclineId === sourceIncline.id,
+      )
+      .map((particle) => particle.id),
+  );
+
+  return particleStates.map((particleState) => {
+    const isCurrentlyOnIncline = associatedParticleIds.has(particleState.id) &&
+      isPointOnInclineSegment(particleState.position, sourceIncline, 1e-7);
+    if (!isCurrentlyOnIncline) return particleState;
+    return {
+      ...particleState,
+      position: {
+        x: particleState.position.x + offset.x,
+        y: particleState.position.y + offset.y,
+      },
+    };
+  });
+}
+
+export const PLACEMENT_PREVIEW_OPACITY = 0.42;
+
+function renderPlacementPreview(
+  context: CanvasRenderingContext2D,
+  preview: PlacementPreview,
+  camera: Camera,
+  inclines: readonly Incline[],
+): void {
+  context.save();
+  context.globalAlpha = preview.kind === "incline" && preview.sourceInclineId
+    ? 1
+    : PLACEMENT_PREVIEW_OPACITY;
+  if (preview.kind === "particle") {
+    renderParticle(
+      context,
+      {
+        id: "placement-preview",
+        position: preview.position,
+        velocity: { x: 0, y: 0 },
+        acceleration: { x: 0, y: 0 },
+      },
+      1,
+      camera,
+      0,
+    );
+  } else {
+    const sourceIncline = preview.sourceInclineId
+      ? inclines.find((incline) => incline.id === preview.sourceInclineId)
+      : undefined;
+    renderIncline(
+      context,
+      sourceIncline
+        ? { ...sourceIncline, anchor: { ...preview.position } }
+        : createIncline("placement-preview", preview.position),
+      camera,
+      0,
+      !preview.isValid,
+    );
+  }
+  context.restore();
+}
+
+function renderIncline(
+  context: CanvasRenderingContext2D,
+  incline: Incline,
+  camera: Camera,
+  whiteMix: number,
+  invalidPlacement = false,
+): void {
+  const geometry = getInclineGeometry(incline);
+  const lower = worldToScreen(geometry.lowerEndpoint, camera);
+  const upper = worldToScreen(geometry.upperEndpoint, camera);
+  const baseUpper = worldToScreen(
+    { x: geometry.upperEndpoint.x, y: geometry.lowerEndpoint.y },
+    camera,
+  );
+  context.save();
+  const fillColour = invalidPlacement ? "#e5aaa5" : "#cbc8c0";
+  const strokeColour = invalidPlacement ? "#a62d26" : "#292d2c";
+  context.fillStyle = mixColourWithWhite(fillColour, whiteMix);
+  context.strokeStyle = mixColourWithWhite(strokeColour, whiteMix);
+  context.lineWidth = 3;
+  context.lineJoin = "round";
+  context.beginPath();
+  context.moveTo(lower.x, lower.y);
+  context.lineTo(upper.x, upper.y);
+  context.lineTo(baseUpper.x, baseUpper.y);
+  context.closePath();
+  context.fill();
+
+  if (incline.roughness.kind === "rough") {
+    context.save();
+    context.clip();
+    context.strokeStyle = mixColourWithWhite(
+      invalidPlacement ? "#c86860" : "#aaa69d",
+      whiteMix,
+    );
+    context.lineWidth = 3;
+    context.beginPath();
+    for (const segment of calculateInclineRoughLineSegments(
+      lower,
+      upper,
+      baseUpper,
+    )) {
+      context.moveTo(segment.start.x, segment.start.y);
+      context.lineTo(segment.end.x, segment.end.y);
+    }
+    context.stroke();
+    context.restore();
+  }
+
+  context.strokeStyle = mixColourWithWhite(strokeColour, whiteMix);
+  context.lineWidth = 3;
+  context.beginPath();
+  context.moveTo(lower.x, lower.y);
+  context.lineTo(upper.x, upper.y);
+  context.lineTo(baseUpper.x, baseUpper.y);
+  context.closePath();
+  context.stroke();
+
+  const angleText = `${incline.angleInput}°`;
+  const fontSize = calculateInitialVelocityTextSize(camera.pixelsPerMetre);
+  context.font = `700 ${fontSize}px "KG Primary Penmanship Alt", sans-serif`;
+  const annotation = calculateInclineAngleAnnotationGeometry(
+    lower,
+    incline.direction,
+    incline.angleDegrees,
+    camera.pixelsPerMetre,
+    context.measureText(angleText).width,
+    incline.horizontalLength,
+  );
+  context.strokeStyle = strokeColour;
+  context.lineWidth = camera.pixelsPerMetre * 0.055;
+  context.beginPath();
+  context.arc(
+    lower.x,
+    lower.y,
+    annotation.arcRadius,
+    annotation.startAngle,
+    annotation.endAngle,
+    annotation.anticlockwise,
+  );
+  context.stroke();
+  context.fillStyle = strokeColour;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillText(
+    angleText,
+    annotation.labelPosition.x,
+    annotation.labelPosition.y,
+  );
+  context.restore();
+}
+
+export interface InclineRoughLineSegment {
+  start: Vec2;
+  end: Vec2;
+}
+
+export function calculateInclineRoughLineSegments(
+  lower: Vec2,
+  upper: Vec2,
+  baseUpper: Vec2,
+  preferredSpacing = 32,
+  lineLength = 18,
+): InclineRoughLineSegment[] {
+  const slope = { x: upper.x - lower.x, y: upper.y - lower.y };
+  const slopeLength = Math.hypot(slope.x, slope.y);
+  if (slopeLength <= 0) return [];
+
+  const lineCount = Math.max(1, Math.floor(slopeLength / preferredSpacing));
+  const slopeMidpoint = {
+    x: (lower.x + upper.x) / 2,
+    y: (lower.y + upper.y) / 2,
+  };
+  const centroid = {
+    x: (lower.x + upper.x + baseUpper.x) / 3,
+    y: (lower.y + upper.y + baseUpper.y) / 3,
+  };
+  const inward = {
+    x: centroid.x - slopeMidpoint.x,
+    y: centroid.y - slopeMidpoint.y,
+  };
+  const inwardMagnitude = Math.hypot(inward.x, inward.y);
+  if (inwardMagnitude <= 0) return [];
+  const inwardUnit = {
+    x: inward.x / inwardMagnitude,
+    y: inward.y / inwardMagnitude,
+  };
+
+  return Array.from({ length: lineCount }, (_, index) => {
+    const progress = (index + 1) / (lineCount + 1);
+    const start = {
+      x: lower.x + slope.x * progress,
+      y: lower.y + slope.y * progress,
+    };
+    return {
+      start,
+      end: {
+        x: start.x + inwardUnit.x * lineLength,
+        y: start.y + inwardUnit.y * lineLength,
+      },
+    };
+  });
+}
+
+export interface InclineAngleAnnotationGeometry {
+  arcRadius: number;
+  startAngle: number;
+  endAngle: number;
+  anticlockwise: boolean;
+  labelPosition: Vec2;
+}
+
+export const INCLINE_ANGLE_LABEL_RADIUS_RATIO = 0.76;
+
+export function calculateInclineAngleAnnotationGeometry(
+  lowerEndpoint: Vec2,
+  direction: Incline["direction"],
+  angleDegrees: number,
+  pixelsPerMetre: number,
+  labelWidth = 0,
+  horizontalLengthMetres = 10,
+): InclineAngleAnnotationGeometry {
+  const startAngle = direction === "rises-right" ? 0 : Math.PI;
+  const sweep = (direction === "rises-right" ? -1 : 1) *
+    angleDegrees * Math.PI / 180;
+  const endAngle = startAngle + sweep;
+  const baseArcRadius =
+    INITIAL_VELOCITY_ANGLE_ARC_RADIUS_METRES * pixelsPerMetre;
+  const halfAngle = Math.abs(sweep) / 2;
+  const halfLabelWithPadding = labelWidth / 2 + pixelsPerMetre * 0.12;
+  const requiredLabelRadius = Math.tan(halfAngle) > 1e-12
+    ? halfLabelWithPadding / Math.tan(halfAngle)
+    : Number.POSITIVE_INFINITY;
+  const requiredArcRadius =
+    requiredLabelRadius / INCLINE_ANGLE_LABEL_RADIUS_RATIO;
+  const maximumArcRadius = horizontalLengthMetres * pixelsPerMetre;
+  const arcRadius = Math.min(
+    maximumArcRadius,
+    Math.max(baseArcRadius, requiredArcRadius),
+  );
+  const labelRadius = arcRadius * INCLINE_ANGLE_LABEL_RADIUS_RATIO;
+  const labelAngle = startAngle + sweep / 2;
+  const labelPosition = {
+    x: lowerEndpoint.x + Math.cos(labelAngle) * labelRadius,
+    y: lowerEndpoint.y + Math.sin(labelAngle) * labelRadius,
+  };
+  return {
+    arcRadius,
+    startAngle,
+    endAngle,
+    anticlockwise: sweep < 0,
+    labelPosition,
+  };
 }
 
 export function shouldRenderForceAnnotations(
@@ -143,31 +745,37 @@ function renderForceAnnotations(
   particleStates: ParticleState[],
   camera: Camera,
   currentTime: number,
-): CanvasExactValueHoverTarget[] {
+  selectedParticleId: string | null,
+  selectedStringId: string | null,
+  selectionWhiteMix: number,
+): CanvasRenderResult {
   const hoverTargets: CanvasExactValueHoverTarget[] = [];
+  const mathLabels: CanvasMathLabel[] = [];
   const particlesById = new Map(
     scene.particles.map((particle) => [particle.id, particle]),
   );
   for (const state of particleStates) {
     const particle = particlesById.get(state.id);
     if (!particle) continue;
-    const normalReactionMagnitude = analyseGroundContactForces(
+    const contactDisplay = getParticleForceContactDisplay(
+      scene,
       particle,
       currentTime,
-      {
-        gravity: scene.settings.gravity,
-        groundEnabled: scene.groundEnabled,
-        groundHeight: scene.groundHeight,
-      },
-    ).contact.normalReactionMagnitude;
+    );
     const annotations = getForceAnnotations(
       particle,
       scene.settings,
-      normalReactionMagnitude,
+      contactDisplay.normalReaction,
+      contactDisplay.incline,
+      contactDisplay.friction,
+      contactDisplay.tension,
     );
     const point = worldToScreen(state.position, camera);
     const { centre, radius } = getRenderedParticleGeometry(point, camera);
-    const screenDirections = annotations.map((annotation) => ({
+    const standardAnnotations = annotations.filter(
+      (annotation) => annotation.id !== "tension",
+    );
+    const screenDirections = standardAnnotations.map((annotation) => ({
       x: annotation.direction.x,
       y: -annotation.direction.y,
     }));
@@ -176,8 +784,30 @@ function renderForceAnnotations(
       centre,
       radius,
     );
-    annotations.forEach((annotation, annotationIndex) => {
-      const origin = arrowOrigins[annotationIndex];
+    let standardAnnotationIndex = 0;
+    annotations.forEach((annotation) => {
+      if (annotation.id === "tension") {
+        renderTensionArrowHead(
+          context,
+          scene,
+          state.id,
+          particleStates,
+          camera,
+          annotation.kind === "components" ? "" : annotation.magnitudeText,
+          formatForceHoverTooltip(
+            annotation.label,
+            annotation.kind === "components" ? null : annotation.magnitudeText,
+            annotation.magnitude,
+          ),
+          hoverTargets,
+          mathLabels,
+          selectedStringId,
+          selectionWhiteMix,
+        );
+        return;
+      }
+      const origin = arrowOrigins[standardAnnotationIndex];
+      standardAnnotationIndex += 1;
       const screenDirection = {
         x: annotation.direction.x,
         y: -annotation.direction.y,
@@ -195,6 +825,24 @@ function renderForceAnnotations(
         y: tip.y - screenDirection.y * headLength,
       };
 
+      if (
+        shouldRenderInclineWeightComponents(
+          annotation.id,
+          particle.id,
+          selectedParticleId,
+          contactDisplay.incline !== null,
+          particle.showResultantForce,
+        ) &&
+        contactDisplay.incline
+      ) {
+        renderInclineWeightComponents(
+          context,
+          origin,
+          contactDisplay.incline,
+          camera,
+        );
+      }
+
       context.save();
       context.strokeStyle = annotation.colour ?? "#292d2c";
       context.fillStyle = annotation.colour ?? "#292d2c";
@@ -209,12 +857,27 @@ function renderForceAnnotations(
       context.lineTo(base.x - perpendicular.x * headWidth, base.y - perpendicular.y * headWidth);
       context.stroke();
 
+      const magnitudeText = annotation.kind === "components"
+        ? null
+        : annotation.magnitudeText;
+      const forceTooltip = formatForceHoverTooltip(
+        annotation.label,
+        magnitudeText,
+        annotation.magnitude,
+      );
+      hoverTargets.push(createForceArrowHoverTarget(
+        origin,
+        tip,
+        Math.max(7, headWidth + 3),
+        forceTooltip,
+      ));
+
       const fontSize = Math.max(14, Math.min(21, camera.pixelsPerMetre * 0.42));
       context.font = `700 ${fontSize}px "KG Primary Penmanship Alt", sans-serif`;
       context.textBaseline = "middle";
       context.textAlign = "left";
       if (annotation.kind === "components") {
-        renderComponentVelocityNotation(
+        const labelBounds = renderComponentVelocityNotation(
           context,
           origin,
           tip,
@@ -223,9 +886,10 @@ function renderForceAnnotations(
           fontSize,
           "N",
           annotation.componentValues,
-          hoverTargets,
+          undefined,
           "after-tip",
         );
+        hoverTargets.push({ ...labelBounds, tooltip: forceTooltip });
         context.restore();
         return;
       }
@@ -250,11 +914,13 @@ function renderForceAnnotations(
         renderForceMagnitudeAtArrowTip(
           context,
           annotation.magnitudeText,
-          annotation.magnitude,
           tip,
           screenDirection,
           fontSize,
           hoverTargets,
+          mathLabels,
+          annotation.colour ?? "#292d2c",
+          forceTooltip,
         );
         context.restore();
         return;
@@ -262,19 +928,215 @@ function renderForceAnnotations(
       renderForceMagnitudeAtArrowTip(
         context,
         annotation.magnitudeText,
-        annotation.magnitude,
         tip,
         screenDirection,
         fontSize,
         hoverTargets,
+        mathLabels,
+        annotation.colour ?? "#292d2c",
+        forceTooltip,
       );
       context.restore();
     });
   }
-  return hoverTargets;
+  return { hoverTargets, mathLabels };
 }
 
+function renderTensionArrowHead(
+  context: CanvasRenderingContext2D,
+  scene: Scene,
+  particleId: string,
+  particleStates: readonly ParticleState[],
+  camera: Camera,
+  magnitudeText: string,
+  tooltip: string,
+  hoverTargets: CanvasExactValueHoverTarget[],
+  mathLabels: CanvasMathLabel[],
+  selectedStringId: string | null,
+  selectionWhiteMix: number,
+): void {
+  const string = scene.strings.find(
+    (candidate) => candidate.particleAId === particleId ||
+      candidate.particleBId === particleId,
+  );
+  if (!string) return;
+  const segment = getStringRenderSegment(scene, string, particleStates, camera);
+  if (!segment) return;
+  const from = string.particleAId === particleId
+    ? segment.visualStart
+    : segment.visualEnd;
+  const toward = string.particleAId === particleId
+    ? segment.visualEnd
+    : segment.visualStart;
+  const geometry = calculateTensionArrowHeadGeometry(
+    from,
+    toward,
+    camera.pixelsPerMetre,
+    string.length,
+  );
+  if (!geometry) return;
+  const colour = getStringStrokeColour(
+    string.id,
+    selectedStringId,
+    selectionWhiteMix,
+  );
+
+  context.save();
+  context.strokeStyle = colour;
+  context.lineWidth = 3;
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  context.beginPath();
+  context.moveTo(geometry.firstWing.x, geometry.firstWing.y);
+  context.lineTo(geometry.tip.x, geometry.tip.y);
+  context.lineTo(geometry.secondWing.x, geometry.secondWing.y);
+  context.stroke();
+  context.restore();
+
+  hoverTargets.push(createForceArrowHoverTarget(
+    from,
+    geometry.tip,
+    Math.max(6, geometry.headWidth * 0.7),
+    tooltip,
+  ));
+  const showMagnitude = !geometry.atMidpoint || string.particleAId === particleId;
+  if (!showMagnitude) return;
+  const fontSize = Math.max(14, Math.min(21, camera.pixelsPerMetre * 0.42));
+  context.save();
+  context.font = `700 ${fontSize}px "KG Primary Penmanship Alt", sans-serif`;
+  context.textBaseline = "middle";
+  context.textAlign = "left";
+  const labelText = `${magnitudeText} N`;
+  const labelWidth = context.measureText(labelText).width;
+  const labelPosition = calculateTensionMagnitudeLabelPosition(
+    geometry,
+    labelWidth,
+    fontSize,
+  );
+  mathLabels.push({
+    text: labelText,
+    position: labelPosition,
+    fontSize,
+    colour,
+  });
+  hoverTargets.push({
+    left: labelPosition.x - 4,
+    top: labelPosition.y - fontSize,
+    right: labelPosition.x + labelWidth + 4,
+    bottom: labelPosition.y + fontSize,
+    tooltip,
+  });
+  context.restore();
+}
+
+export interface TensionArrowHeadGeometry {
+  tip: ScreenPoint;
+  firstWing: ScreenPoint;
+  secondWing: ScreenPoint;
+  headWidth: number;
+  direction: ScreenPoint;
+  atMidpoint: boolean;
+}
+
+export function calculateTensionArrowHeadGeometry(
+  from: ScreenPoint,
+  toward: ScreenPoint,
+  pixelsPerMetre: number,
+  stringLengthMetres: number,
+): TensionArrowHeadGeometry | null {
+  const difference = { x: toward.x - from.x, y: toward.y - from.y };
+  const lineLength = Math.hypot(difference.x, difference.y);
+  if (lineLength <= 1e-9) return null;
+  const direction = {
+    x: difference.x / lineLength,
+    y: difference.y / lineLength,
+  };
+  const headLength = Math.max(8, Math.min(16, pixelsPerMetre * 0.3));
+  const headWidth = headLength * 0.65;
+  const threeMetresInPixels = 3 * Math.max(0, pixelsPerMetre);
+  const atMidpoint = stringLengthMetres <= 6;
+  const midpointTipOffset = Math.min(
+    TENSION_MIDPOINT_TIP_OFFSET_PX,
+    lineLength * 0.1,
+  );
+  const tipDistance = atMidpoint
+    ? Math.max(0, lineLength / 2 - midpointTipOffset)
+    : threeMetresInPixels;
+  const tip = {
+    x: from.x + direction.x * tipDistance,
+    y: from.y + direction.y * tipDistance,
+  };
+  const base = {
+    x: tip.x - direction.x * headLength,
+    y: tip.y - direction.y * headLength,
+  };
+  const perpendicular = { x: -direction.y, y: direction.x };
+  return {
+    tip,
+    firstWing: {
+      x: base.x + perpendicular.x * headWidth,
+      y: base.y + perpendicular.y * headWidth,
+    },
+    secondWing: {
+      x: base.x - perpendicular.x * headWidth,
+      y: base.y - perpendicular.y * headWidth,
+    },
+    headWidth,
+    direction,
+    atMidpoint,
+  };
+}
+
+export function calculateTensionMagnitudeLabelPosition(
+  geometry: TensionArrowHeadGeometry,
+  labelWidth: number,
+  fontSize: number,
+): ScreenPoint {
+  const arrowTop = Math.min(
+    geometry.tip.y,
+    geometry.firstWing.y,
+    geometry.secondWing.y,
+  );
+  const gap = Math.max(4, fontSize * 0.2);
+  return {
+    x: geometry.tip.x - Math.max(0, labelWidth) / 2,
+    y: arrowTop - gap - Math.max(0, fontSize) / 2,
+  };
+}
+
+function getStringStrokeColour(
+  stringId: string,
+  selectedStringId: string | null,
+  selectionWhiteMix: number,
+): string {
+  return stringId === selectedStringId
+    ? mixColour(STRING_COLOUR, "#ffffff", selectionWhiteMix)
+    : STRING_COLOUR;
+}
+
+export const STRING_COLOUR = "#626765";
+export const TENSION_MIDPOINT_TIP_OFFSET_PX = 4;
+
 export const ZERO_RESULTANT_MARKER_RADIUS_RATIO = 0.25;
+
+export function shouldRenderInclineWeightComponents(
+  forceId: string,
+  particleId: string,
+  selectedParticleId: string | null,
+  hasInclineContact: boolean,
+  showResultantForce: boolean,
+): boolean {
+  return forceId === "weight" &&
+    particleId === selectedParticleId &&
+    hasInclineContact &&
+    !showResultantForce;
+}
+
+export function calculateInclineWeightAngleFontSize(
+  pixelsPerMetre: number,
+): number {
+  return Math.max(0, pixelsPerMetre) * 0.42;
+}
 
 export function calculateZeroResultantMarkerRadius(
   particleRadius: number,
@@ -314,19 +1176,17 @@ function renderZeroResultantMarkers(
   for (const state of particleStates) {
     const particle = particlesById.get(state.id);
     if (!particle?.showResultantForce) continue;
-    const normalReactionMagnitude = analyseGroundContactForces(
+    const contactDisplay = getParticleForceContactDisplay(
+      scene,
       particle,
       currentTime,
-      {
-        gravity: scene.settings.gravity,
-        groundEnabled: scene.groundEnabled,
-        groundHeight: scene.groundHeight,
-      },
-    ).contact.normalReactionMagnitude;
+    );
     if (!isZeroResultantForce(
       particle,
       scene.settings,
-      normalReactionMagnitude,
+      contactDisplay.normalReaction,
+      contactDisplay.friction,
+      contactDisplay.tension,
     )) {
       continue;
     }
@@ -340,14 +1200,264 @@ function renderZeroResultantMarkers(
   }
 }
 
+export interface ParticleForceContactDisplay {
+  normalReaction: number | NormalReactionDisplayInput;
+  friction: FrictionDisplayInput | null;
+  incline: Incline | null;
+  tension: TensionDisplayInput | null;
+}
+
+export function getParticleForceContactDisplay(
+  scene: Scene,
+  particle: Scene["particles"][number],
+  time: number,
+): ParticleForceContactDisplay {
+  const connectedString = scene.strings.find(
+    (string) => string.particleAId === particle.id ||
+      string.particleBId === particle.id,
+  );
+  const connectedTrajectory = connectedString
+    ? calculateConnectedSystemTrajectory(scene, connectedString, time)
+    : null;
+  const connectedAnalysis = connectedTrajectory?.analysis ?? null;
+  const connectedEndpoint = connectedAnalysis
+    ? connectedAnalysis.endpointA.particleId === particle.id
+      ? connectedAnalysis.endpointA
+      : connectedAnalysis.endpointB
+    : null;
+  const connectedConstraintActive = connectedAnalysis?.state === "taut" &&
+    connectedAnalysis.commonAcceleration !== null;
+  const activeConnectedEndpoint = connectedConstraintActive
+    ? connectedEndpoint
+    : null;
+  const tension = connectedAnalysis?.state === "taut" &&
+      connectedEndpoint && connectedAnalysis.tension > 1e-12
+    ? {
+        magnitude: connectedAnalysis.tension,
+        vector: connectedEndpoint.tensionVector,
+      }
+    : null;
+  const trajectory = calculateSurfaceTrajectory(particle, time, {
+    gravity: scene.settings.gravity,
+    groundEnabled: scene.groundEnabled,
+    groundHeight: scene.groundHeight,
+    groundRough: scene.groundRough,
+    groundFriction: scene.groundFriction,
+    inclines: scene.inclines,
+  });
+  if (
+    connectedConstraintActive &&
+    connectedAnalysis.support.kind === "incline" &&
+    activeConnectedEndpoint
+  ) {
+    const connectedSupport = connectedAnalysis.support;
+    const incline = scene.inclines.find(
+      (candidate) => candidate.id === connectedSupport.inclineId,
+    );
+    if (incline) {
+      const normalReaction = createInclineNormalReactionDisplay(
+        particle,
+        incline,
+        scene.settings,
+        activeConnectedEndpoint.normalReactionMagnitude,
+      ) ?? 0;
+      return {
+        normalReaction,
+        friction: incline.roughness.kind === "rough"
+          ? createFrictionDisplay(
+              particle,
+              scene.settings,
+              normalReaction,
+              activeConnectedEndpoint.friction,
+              incline.roughness.coefficientOfFriction,
+              incline.roughness.coefficientInput,
+              incline,
+            )
+          : null,
+        incline,
+        tension,
+      };
+    }
+  }
+  if (
+    connectedConstraintActive &&
+    connectedAnalysis.support.kind === "ground" &&
+    activeConnectedEndpoint
+  ) {
+    const normalReaction = activeConnectedEndpoint.normalReactionMagnitude;
+    return {
+      normalReaction,
+      friction: scene.groundRough
+        ? createFrictionDisplay(
+            particle,
+            scene.settings,
+            normalReaction,
+            activeConnectedEndpoint.friction,
+            scene.groundFriction,
+            String(scene.groundFriction),
+            null,
+          )
+        : null,
+      incline: null,
+      tension,
+    };
+  }
+  if (trajectory.contact.kind === "incline") {
+    const inclineId = trajectory.contact.inclineId;
+    const incline = scene.inclines.find(
+      (candidate) => candidate.id === inclineId,
+    );
+    if (incline) {
+      const normalReaction = createInclineNormalReactionDisplay(
+        particle,
+        incline,
+        scene.settings,
+        trajectory.contact.normalReactionMagnitude,
+      ) ?? 0;
+      return {
+        normalReaction,
+        friction: incline.roughness.kind === "rough"
+          ? createFrictionDisplay(
+              particle,
+              scene.settings,
+              normalReaction,
+              trajectory.contact.friction,
+              incline.roughness.coefficientOfFriction,
+              incline.roughness.coefficientInput,
+              incline,
+            )
+          : null,
+        incline,
+        tension,
+      };
+    }
+  }
+  const normalReaction = trajectory.contact.kind === "ground"
+      ? trajectory.contact.normalReactionMagnitude
+      : 0;
+  return {
+    normalReaction,
+    friction: trajectory.contact.kind === "ground" && scene.groundRough
+      ? createFrictionDisplay(
+          particle,
+          scene.settings,
+          normalReaction,
+          trajectory.contact.friction,
+          scene.groundFriction,
+          String(scene.groundFriction),
+          null,
+        )
+      : null,
+    incline: null,
+    tension,
+  };
+}
+
+function renderInclineWeightComponents(
+  context: CanvasRenderingContext2D,
+  origin: Vec2,
+  incline: Incline,
+  camera: Camera,
+): void {
+  const vectors = calculateInclineWeightComponentVectors(incline);
+  const arrowLength = FORCE_ARROW_LENGTH_METRES * camera.pixelsPerMetre;
+  const perpendicularDelta = {
+    x: vectors.perpendicular.x * arrowLength,
+    y: -vectors.perpendicular.y * arrowLength,
+  };
+  const parallelDelta = {
+    x: vectors.parallel.x * arrowLength,
+    y: -vectors.parallel.y * arrowLength,
+  };
+  const perpendicularTip = {
+    x: origin.x + perpendicularDelta.x,
+    y: origin.y + perpendicularDelta.y,
+  };
+  const weightTip = {
+    x: perpendicularTip.x + parallelDelta.x,
+    y: perpendicularTip.y + parallelDelta.y,
+  };
+
+  context.save();
+  context.strokeStyle = INITIAL_VELOCITY_COLOUR;
+  context.fillStyle = INITIAL_VELOCITY_COLOUR;
+  context.lineWidth = 3;
+  context.lineCap = "round";
+  drawDashedTeachingLine(context, origin, perpendicularTip);
+  drawDashedTeachingLine(context, perpendicularTip, weightTip);
+  renderInclineWeightAngle(context, origin, incline, camera);
+  context.restore();
+}
+
+function drawDashedTeachingLine(
+  context: CanvasRenderingContext2D,
+  start: Vec2,
+  end: Vec2,
+): void {
+  context.setLineDash([10, 8]);
+  context.beginPath();
+  context.moveTo(start.x, start.y);
+  context.lineTo(end.x, end.y);
+  context.stroke();
+}
+
+function renderInclineWeightAngle(
+  context: CanvasRenderingContext2D,
+  origin: Vec2,
+  incline: Incline,
+  camera: Camera,
+): void {
+  const fontSize = calculateInclineWeightAngleFontSize(camera.pixelsPerMetre);
+  const arcRadius =
+    INITIAL_VELOCITY_ANGLE_ARC_RADIUS_METRES * camera.pixelsPerMetre;
+  const startAngle = Math.PI / 2;
+  const sweep = (incline.direction === "rises-right" ? -1 : 1) *
+    incline.angleDegrees * Math.PI / 180;
+
+  context.setLineDash([]);
+  context.lineWidth = camera.pixelsPerMetre * 0.055;
+  context.beginPath();
+  context.arc(
+    origin.x,
+    origin.y,
+    arcRadius,
+    startAngle,
+    startAngle + sweep,
+    sweep < 0,
+  );
+  context.stroke();
+
+  context.font = `700 ${fontSize}px "KG Primary Penmanship Alt", sans-serif`;
+  const angleText = `${incline.angleInput}°`;
+  const labelRadius = arcRadius - fontSize * 0.8;
+  const measurementSide = Math.sign(sweep) || 1;
+  const narrowLabelOffset = Math.atan(
+    (context.measureText(angleText).width / 2 +
+      camera.pixelsPerMetre * 0.08) /
+      labelRadius,
+  );
+  const labelAngle = isNarrowInitialVelocityAngle(incline.angleDegrees)
+    ? startAngle - measurementSide * narrowLabelOffset
+    : startAngle + sweep / 2;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillText(
+    angleText,
+    origin.x + Math.cos(labelAngle) * labelRadius,
+    origin.y + Math.sin(labelAngle) * labelRadius,
+  );
+}
+
 function renderForceMagnitudeAtArrowTip(
   context: CanvasRenderingContext2D,
   magnitudeText: string,
-  magnitude: number,
   tip: Vec2,
   screenDirection: Vec2,
   fontSize: number,
   hoverTargets: CanvasExactValueHoverTarget[],
+  mathLabels: CanvasMathLabel[],
+  colour: string,
+  forceTooltip: string,
 ): void {
   const unitText = " N";
   const unitWidth = context.measureText(unitText).width;
@@ -360,25 +1470,19 @@ function renderForceMagnitudeAtArrowTip(
     fontSize,
     Math.max(3, fontSize * 0.2),
   );
-  const valueWidth = drawCanvasMathValue(
-    context,
-    magnitudeText,
-    labelPosition.x,
-    labelPosition.y,
+  mathLabels.push({
+    text: `${magnitudeText}${unitText}`,
+    position: labelPosition,
     fontSize,
-  );
-  const unitX = labelPosition.x + valueWidth;
-  context.fillText(unitText, unitX, labelPosition.y);
-  const tooltip = getExactValueTooltip(magnitudeText, magnitude);
-  if (tooltip) {
-    hoverTargets.push({
-      left: Math.min(labelPosition.x, unitX) - 4,
-      top: labelPosition.y - fontSize,
-      right: unitX + unitWidth + 4,
-      bottom: labelPosition.y + fontSize,
-      tooltip,
-    });
-  }
+    colour,
+  });
+  hoverTargets.push({
+    left: labelPosition.x - 4,
+    top: labelPosition.y - fontSize,
+    right: labelPosition.x + estimatedLabelWidth + 4,
+    bottom: labelPosition.y + fontSize,
+    tooltip: forceTooltip,
+  });
 }
 
 function renderHeightMeasurements(
@@ -511,14 +1615,81 @@ function drawHeightMeasurementLabel(
 export function findCanvasExactValueHoverTarget(
   targets: CanvasExactValueHoverTarget[],
   point: { x: number; y: number },
+  exclusions: readonly CanvasTooltipExclusion[] = [],
 ): CanvasExactValueHoverTarget | null {
+  if (exclusions.some((exclusion) =>
+    Math.hypot(
+      point.x - exclusion.centre.x,
+      point.y - exclusion.centre.y,
+    ) <= exclusion.radius
+  )) {
+    return null;
+  }
   return targets.find(
     (target) =>
       point.x >= target.left &&
       point.x <= target.right &&
       point.y >= target.top &&
-      point.y <= target.bottom,
+      point.y <= target.bottom &&
+      (!target.segment ||
+        distanceFromPointToSegment(
+          point,
+          target.segment.start,
+          target.segment.end,
+        ) <= target.segment.radius),
   ) ?? null;
+}
+
+export function formatForceHoverTooltip(
+  forceName: string,
+  displayText: string | null,
+  magnitude: number,
+): string {
+  const isExact = Boolean(displayText && isSymbolicExactDisplay(displayText));
+  const valueText = isExact
+    ? `${magnitude.toFixed(3)} N (3 d.p.)`
+    : `${displayText ?? formatCompactThreeDecimalValue(magnitude)} N`;
+  return `${forceName}\n${valueText}`;
+}
+
+export function createForceArrowHoverTarget(
+  start: Vec2,
+  end: Vec2,
+  radius: number,
+  tooltip: string,
+): CanvasExactValueHoverTarget {
+  const safeRadius = Math.max(0, radius);
+  return {
+    left: Math.min(start.x, end.x) - safeRadius,
+    top: Math.min(start.y, end.y) - safeRadius,
+    right: Math.max(start.x, end.x) + safeRadius,
+    bottom: Math.max(start.y, end.y) + safeRadius,
+    tooltip,
+    segment: { start: { ...start }, end: { ...end }, radius: safeRadius },
+  };
+}
+
+function formatCompactThreeDecimalValue(value: number): string {
+  const rounded = Number(value.toFixed(3));
+  return String(Object.is(rounded, -0) ? 0 : rounded);
+}
+
+function distanceFromPointToSegment(
+  point: Vec2,
+  start: Vec2,
+  end: Vec2,
+): number {
+  const x = end.x - start.x;
+  const y = end.y - start.y;
+  const lengthSquared = x * x + y * y;
+  if (lengthSquared === 0) return Math.hypot(point.x - start.x, point.y - start.y);
+  const projection = Math.max(0, Math.min(1,
+    ((point.x - start.x) * x + (point.y - start.y) * y) / lengthSquared,
+  ));
+  return Math.hypot(
+    point.x - (start.x + projection * x),
+    point.y - (start.y + projection * y),
+  );
 }
 
 export function drawCanvasMathValue(
@@ -1055,7 +2226,7 @@ function renderComponentVelocityNotation(
   componentValues?: { x: number; y: number },
   hoverTargets?: CanvasExactValueHoverTarget[],
   placement: "along-arrow" | "after-tip" = "along-arrow",
-): void {
+): CanvasAnnotationBounds {
   const rowOffset = fontSize * 0.52;
   const numberWidth = Math.max(
     context.measureText(annotation.componentText.x).width,
@@ -1177,6 +2348,12 @@ function renderComponentVelocityNotation(
 
   context.textAlign = "left";
   context.fillText(unit, right + unitGap, anchor.y);
+  return {
+    left: left - 4,
+    top: bracketTop - 4,
+    right: right + unitGap + unitWidth + 4,
+    bottom: bracketBottom + 4,
+  };
 }
 
 function normaliseDiagramArcSweep(sweep: number): number {
@@ -1237,19 +2414,52 @@ function renderParticle(
   particleCount: number,
   camera: Camera,
   whiteMix: number,
+  shape: Scene["particles"][number]["shape"] = "circle",
+  incline: Incline | null = null,
+  invalid = false,
 ): void {
   const point = worldToScreen(particle.position, camera);
-  const { centre, radius } = getRenderedParticleGeometry(point, camera);
+  const geometry = getRenderedParticleShapeGeometry(
+    point,
+    camera,
+    shape,
+    incline,
+  );
+  const { centre, radius } = geometry;
 
   context.save();
   const outlineWidth = 3;
-  context.fillStyle = mixColourWithWhite("#dedbd3", whiteMix);
-  context.strokeStyle = mixColourWithWhite("#292d2c", whiteMix);
+  const colours = getParticleRenderColours(whiteMix, invalid);
+  context.fillStyle = colours.fill;
+  context.strokeStyle = colours.stroke;
   context.lineWidth = outlineWidth;
-  context.beginPath();
-  context.arc(centre.x, centre.y, Math.max(0, radius - outlineWidth / 2), 0, Math.PI * 2);
-  context.fill();
-  context.stroke();
+  if (geometry.shape === "square") {
+    const outlinedSize = Math.max(0, geometry.size - outlineWidth);
+    context.save();
+    context.translate(centre.x, centre.y);
+    context.rotate(geometry.rotation);
+    context.beginPath();
+    context.rect(
+      -outlinedSize / 2,
+      -outlinedSize / 2,
+      outlinedSize,
+      outlinedSize,
+    );
+    context.fill();
+    context.stroke();
+    context.restore();
+  } else {
+    context.beginPath();
+    context.arc(
+      centre.x,
+      centre.y,
+      Math.max(0, radius - outlineWidth / 2),
+      0,
+      Math.PI * 2,
+    );
+    context.fill();
+    context.stroke();
+  }
 
   if (particleCount > 1) {
     const countText = String(particleCount);
@@ -1265,6 +2475,18 @@ function renderParticle(
   }
 
   context.restore();
+}
+
+export function getParticleRenderColours(
+  whiteMix: number,
+  invalid: boolean,
+): { fill: string; stroke: string } {
+  return invalid
+    ? { fill: "#e89a8f", stroke: "#a62d26" }
+    : {
+        fill: mixColourWithWhite("#dedbd3", whiteMix),
+        stroke: mixColourWithWhite("#292d2c", whiteMix),
+      };
 }
 
 function positiveModulo(value: number, divisor: number): number {

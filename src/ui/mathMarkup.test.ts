@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { tokenizeMathText } from "./mathMarkup";
+import { splitBreakableMathText, tokenizeMathText } from "./mathMarkup";
 
 describe("mathematical markup tokenisation", () => {
   it("treats arctan as a mathematical function", () => {
@@ -30,6 +30,27 @@ describe("mathematical markup tokenisation", () => {
     }]);
   });
 
+  it("keeps decimal values wholly inside fractions", () => {
+    expect(tokenizeMathText("(10 + √(168.6))/9.8")).toEqual([{
+      kind: "fraction",
+      numerator: "10 + √(168.6)",
+      denominator: "9.8",
+      exponent: undefined,
+    }]);
+    expect(tokenizeMathText("1.25/0.5")).toEqual([{
+      kind: "fraction",
+      numerator: "1.25",
+      denominator: "0.5",
+      exponent: undefined,
+    }]);
+    expect(tokenizeMathText("2.5√(3)/1.25")).toEqual([{
+      kind: "rational-surd",
+      numeratorCoefficient: "2.5",
+      radicand: "3",
+      denominator: "1.25",
+    }]);
+  });
+
   it("keeps entered decimals as decimal number tokens", () => {
     expect(tokenizeMathText("2.5 + (-9.8)(0.3)")).not.toContainEqual(
       expect.objectContaining({ kind: "fraction" }),
@@ -54,6 +75,17 @@ describe("mathematical markup tokenisation", () => {
       { kind: "space", value: " " },
       { kind: "identifier", value: "m", exponent: undefined },
       { kind: "identifier", value: "a", subscript: "x", exponent: undefined },
+    ]);
+  });
+
+  it("recognises parallel and perpendicular force subscripts as symbols", () => {
+    expect(tokenizeMathText("ΣF_∥ + F_⊥")).toEqual([
+      { kind: "summation", value: "Σ" },
+      { kind: "identifier", value: "F", subscript: "∥", exponent: undefined },
+      { kind: "space", value: " " },
+      { kind: "operator", value: "+" },
+      { kind: "space", value: " " },
+      { kind: "identifier", value: "F", subscript: "⊥", exponent: undefined },
     ]);
   });
 
@@ -101,5 +133,26 @@ describe("mathematical markup tokenisation", () => {
       radicand: "3",
       denominator: "2",
     }]);
+  });
+});
+
+describe("enlarged calculation breakpoints", () => {
+  it("starts new chunks with equality and additive operators", () => {
+    expect(splitBreakableMathText("ΣF_x = 12 + 8 − 3 = 17")).toEqual([
+      "ΣF_x",
+      "= 12",
+      "+ 8",
+      "− 3",
+      "= 17",
+    ]);
+  });
+
+  it("does not split unary signs or operators inside brackets", () => {
+    expect(splitBreakableMathText("v = −5 + (3 + 2) = 0")).toEqual([
+      "v",
+      "= −5",
+      "+ (3 + 2)",
+      "= 0",
+    ]);
   });
 });

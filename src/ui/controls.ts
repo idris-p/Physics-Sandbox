@@ -16,14 +16,23 @@ import type {
   AngleDirection,
   AngleReferenceAxis,
 } from "../kinematics/angleConvention";
-import type { InitialVelocityInputMode } from "../model/Particle";
+import type { InitialVelocityInputMode, ParticleShape } from "../model/Particle";
 import type { AppliedForceInputMode } from "../model/AppliedForce";
+import {
+  MINIMUM_INCLINE_HORIZONTAL_LENGTH,
+  type InclineDirection,
+} from "../model/Incline";
 import type { ParticleForceDisplay } from "../dynamics/forceDisplay";
+import type { InclineForceResolutionDisplay } from "../dynamics/inclineForceDisplay";
+import type {
+  ConnectedSystemDisplay,
+} from "../dynamics/connectedSystemDisplay";
 import {
   formatAutoPauseTimeExactText,
   type AutoPauseTimeDisplay,
 } from "../simulation/autoPauseTimeDisplay";
 import {
+  createBreakableMathExpression,
   createMathExpression,
   createForceAccelerationExpression,
   createForceResolutionExpression,
@@ -42,7 +51,10 @@ import type {
   MotionGraphAnnotation,
   MotionGraphData,
 } from "../kinematics/motionGraphs";
-import { formatWorkingValue } from "../kinematics/exactDisplay";
+import {
+  formatWorkingValue,
+  type DisplayValue,
+} from "../kinematics/exactDisplay";
 import {
   chooseMotionGraphAnnotationPlacement,
   EXPANDED_MOTION_GRAPH_HEIGHT,
@@ -57,14 +69,26 @@ import type {
   ExactPhaseTime,
   PhaseIntervalNote,
 } from "../simulation/phaseIntervalNote";
+import { attachStableButtonPress } from "./stableButtonPress";
 
-export type PlaybackButtonState = "paused" | "playing" | "pause-pending";
+export type PlaybackButtonState =
+  | "paused"
+  | "playing"
+  | "pause-pending"
+  | "blocked";
 export type InitialVelocityField = "x" | "y" | "speed" | "angle";
-type ForceCalculationId = "resolve-x" | "resolve-y" | "fma";
+type ForceCalculationId =
+  | "resolve-parallel"
+  | "resolve-perpendicular"
+  | "resolve-x"
+  | "resolve-y"
+  | "fma";
 type ParticlePropertiesTab = "general" | "forces" | "kinematics";
 export type SelectionProperties =
   | {
       type: "particle";
+      name: string;
+      shape: ParticleShape;
       position: Vec2;
       mass: number;
       massText: string;
@@ -78,6 +102,8 @@ export type SelectionProperties =
         polarValues: { magnitude: number; angle: number };
       }>;
       forceDisplay: ParticleForceDisplay;
+      inclineForceResolution: InclineForceResolutionDisplay | null;
+      inclineKinematicsActive: boolean;
       initialVelocityText: { x: string; y: string };
       initialVelocityValues: {
         x: number;
@@ -106,8 +132,29 @@ export type SelectionProperties =
         x: KinematicEquationResult[];
         y: SuvatEquationResult[];
       };
+      stringConnectionMessage: string | null;
     }
   | { type: "ground"; rough: boolean; friction: number }
+  | {
+      type: "incline";
+      position: Vec2;
+      horizontalLengthInput: string;
+      angleInput: string;
+      direction: InclineDirection;
+      rough: boolean;
+      friction: number;
+      frictionInput: string;
+    }
+  | {
+      type: "string";
+      particleA: { id: string; name: string; mass: number };
+      particleB: { id: string; name: string; mass: number };
+      state: "taut" | "slack";
+      length: number;
+      lengthText: string;
+      display: ConnectedSystemDisplay;
+      boundaryMessage: string | null;
+    }
   | null;
 
 export interface ControlCallbacks {
@@ -116,6 +163,8 @@ export interface ControlCallbacks {
   onGroundChange: (enabled: boolean) => void;
   onShowForceArrowsChange: (visible: boolean) => void;
   onGravityChange: (gravity: number, enteredText: string) => void;
+  onParticleNameChange: (name: string) => void;
+  onParticleShapeChange: (shape: ParticleShape) => void;
   onParticleMassChange: (mass: number, enteredText: string) => void;
   onAddAppliedForce: () => void;
   onShowResultantForceChange: (enabled: boolean) => void;
@@ -150,6 +199,8 @@ export interface ControlCallbacks {
     value: number,
     enteredText: string,
   ) => void;
+  onConnectWithString: () => void;
+  onStringLengthChange: (length: number, enteredText: string) => boolean;
   onPositiveXChange: (direction: HorizontalPositiveDirection) => void;
   onPositiveYChange: (direction: VerticalPositiveDirection) => void;
   onAngleConventionChange: (
@@ -158,6 +209,11 @@ export interface ControlCallbacks {
   ) => void;
   onGroundFrictionChange: (coefficient: number) => void;
   onGroundRoughChange: (rough: boolean) => void;
+  onInclineLengthChange: (length: number, enteredText: string) => void;
+  onInclineAngleChange: (angle: number, enteredText: string) => void;
+  onInclineDirectionChange: (direction: InclineDirection) => void;
+  onInclineRoughChange: (rough: boolean) => void;
+  onInclineFrictionChange: (coefficient: number, enteredText: string) => void;
   onClearScene: () => void;
   onTimeChange: (time: number, enteredText: string) => void;
   onPrevious: (interval: number) => void;
@@ -170,8 +226,10 @@ export interface ControlCallbacks {
 
 export interface Controls {
   canvas: HTMLCanvasElement;
+  canvasMathOverlay: HTMLElement;
   deleteTarget: HTMLButtonElement;
   particleSource: HTMLButtonElement;
+  inclineSource: HTMLButtonElement;
   setTool: (tool: Tool) => void;
   setSelected: (hasSelection: boolean) => void;
   setSelectionProperties: (selection: SelectionProperties) => void;
@@ -183,13 +241,18 @@ export interface Controls {
     enteredText?: string,
     exactDisplay?: AutoPauseTimeDisplay | null,
   ) => void;
-  setPlaybackState: (state: PlaybackButtonState) => void;
+  setPlaybackState: (
+    state: PlaybackButtonState,
+    blockedReason?: string | null,
+  ) => void;
   setZoom: (pixelsPerMetre: number) => void;
 }
 
 export function createControls(callbacks: ControlCallbacks): Controls {
   const canvas = getElement<HTMLCanvasElement>("scene-canvas");
+  const canvasMathOverlay = getElement<HTMLElement>("canvas-math-overlay");
   const particleTool = getElement<HTMLButtonElement>("particle-tool");
+  const inclineTool = getElement<HTMLButtonElement>("incline-tool");
   const removeParticle = getElement<HTMLButtonElement>("remove-particle");
   const groundToggle = getElement<HTMLInputElement>("ground-toggle");
   const showForceArrowsToggle = getElement<HTMLInputElement>(
@@ -224,13 +287,71 @@ export function createControls(callbacks: ControlCallbacks): Controls {
   );
   const particlePositionX = getElement<HTMLOutputElement>("particle-position-x");
   const particlePositionY = getElement<HTMLOutputElement>("particle-position-y");
+  const particleNameInput = getElement<HTMLInputElement>("particle-name-input");
+  const particleShapeSelect = getElement<HTMLSelectElement>(
+    "particle-shape-select",
+  );
+  const connectString = getElement<HTMLButtonElement>("connect-string");
+  const connectStringMessage = getElement<HTMLElement>("connect-string-message");
   const particleMassInput = getElement<HTMLInputElement>("particle-mass-input");
+  const connectedSystemProperties = getElement<HTMLElement>(
+    "connected-system-properties",
+  );
+  const connectedParticleA = getElement<HTMLOutputElement>("connected-particle-a");
+  const connectedParticleB = getElement<HTMLOutputElement>("connected-particle-b");
+  const connectedStringState = getElement<HTMLOutputElement>("connected-string-state");
+  const connectedLengthInput = getElement<HTMLInputElement>(
+    "connected-length-input",
+  );
+  const connectedLengthError = getElement<HTMLElement>("connected-length-error");
+  const connectedCommonAccelerationRow = getElement<HTMLElement>(
+    "connected-common-acceleration-row",
+  );
+  const connectedSlackNote = getElement<HTMLElement>("connected-slack-note");
+  const connectedForceResolutionSection = getElement<HTMLElement>(
+    "connected-force-resolution-section",
+  );
+  const connectedFmaSection = getElement<HTMLElement>("connected-fma-section");
+  const connectedAcceleration = getElement<HTMLOutputElement>(
+    "connected-acceleration",
+  );
+  const connectedTension = getElement<HTMLOutputElement>("connected-tension");
+  const connectedForceResolution = getElement<HTMLElement>(
+    "connected-force-resolution",
+  );
+  const connectedFma = getElement<HTMLElement>("connected-fma");
+  const connectedBoundaryMessage = getElement<HTMLElement>(
+    "connected-boundary-message",
+  );
   const particleWeightValue = getElement<HTMLOutputElement>(
     "particle-weight-value",
+  );
+  const particleWeightDirection = getElement<HTMLElement>(
+    "particle-weight-direction",
   );
   const normalReactionRow = getElement<HTMLElement>("normal-reaction-row");
   const particleNormalReactionValue = getElement<HTMLOutputElement>(
     "particle-normal-reaction-value",
+  );
+  const particleNormalReactionDirection = getElement<HTMLElement>(
+    "particle-normal-reaction-direction",
+  );
+  const frictionRow = getElement<HTMLElement>("friction-row");
+  const tensionRow = getElement<HTMLElement>("tension-row");
+  const particleTensionValue = getElement<HTMLOutputElement>(
+    "particle-tension-value",
+  );
+  const particleTensionDirection = getElement<HTMLElement>(
+    "particle-tension-direction",
+  );
+  const particleFrictionValue = getElement<HTMLOutputElement>(
+    "particle-friction-value",
+  );
+  const particleFrictionCondition = getElement<HTMLElement>(
+    "particle-friction-condition",
+  );
+  const particleFrictionDirection = getElement<HTMLElement>(
+    "particle-friction-direction",
   );
   const appliedForcesList = getElement<HTMLElement>("applied-forces-list");
   const addAppliedForce = getElement<HTMLButtonElement>("add-applied-force");
@@ -248,6 +369,24 @@ export function createControls(callbacks: ControlCallbacks): Controls {
   );
   const forceResultantX = getElement<HTMLElement>("force-resultant-x");
   const forceResultantY = getElement<HTMLElement>("force-resultant-y");
+  const forceResolutionParallelRow = getElement<HTMLElement>(
+    "force-resolution-parallel-row",
+  );
+  const forceResolutionPerpendicularRow = getElement<HTMLElement>(
+    "force-resolution-perpendicular-row",
+  );
+  const forceResultantParallel = getElement<HTMLElement>(
+    "force-resultant-parallel",
+  );
+  const forceResultantPerpendicular = getElement<HTMLElement>(
+    "force-resultant-perpendicular",
+  );
+  const forceAccelerationParallel = getElement<HTMLElement>(
+    "force-acceleration-parallel",
+  );
+  const forceAccelerationPerpendicular = getElement<HTMLElement>(
+    "force-acceleration-perpendicular",
+  );
   const forceAccelerationX = getElement<HTMLElement>("force-acceleration-x");
   const forceAccelerationY = getElement<HTMLElement>("force-acceleration-y");
   const forceAnalysis = getElement<HTMLElement>("force-analysis");
@@ -347,6 +486,9 @@ export function createControls(callbacks: ControlCallbacks): Controls {
   );
   const kinematicVertical = getElement<HTMLButtonElement>("kinematic-vertical");
   const kinematicHorizontal = getElement<HTMLButtonElement>("kinematic-horizontal");
+  const kinematicComponentSelector = getElement<HTMLElement>(
+    "kinematic-component-selector",
+  );
   const kinematicQuantityRows = new Map(
     Array.from(
       document.querySelectorAll<HTMLElement>("[data-kinematic-quantity]"),
@@ -366,15 +508,35 @@ export function createControls(callbacks: ControlCallbacks): Controls {
   const suvatCalculationDialogEquation = getElement<HTMLElement>(
     "suvat-calculation-dialog-equation",
   );
+  const suvatCalculationDialogContent = suvatCalculationDialog.querySelector<HTMLElement>(
+    ".suvat-calculation-dialog-content",
+  );
+  const suvatCalculationDialogHeader = suvatCalculationDialog.querySelector<HTMLElement>(
+    ".suvat-calculation-dialog-header",
+  );
+  if (!suvatCalculationDialogContent || !suvatCalculationDialogHeader) {
+    throw new Error("Missing required enlarged calculation layout elements.");
+  }
   const groundProperties = getElement<HTMLElement>("ground-properties");
   const groundRoughToggle = getElement<HTMLInputElement>("ground-rough-toggle");
   const groundFrictionInput = getElement<HTMLInputElement>("ground-friction-input");
+  const inclineProperties = getElement<HTMLElement>("incline-properties");
+  const inclinePositionX = getElement<HTMLOutputElement>("incline-position-x");
+  const inclinePositionY = getElement<HTMLOutputElement>("incline-position-y");
+  const inclineAngleInput = getElement<HTMLInputElement>("incline-angle-input");
+  const inclineLengthInput = getElement<HTMLInputElement>("incline-length-input");
+  const inclineRisesRight = getElement<HTMLButtonElement>("incline-rises-right");
+  const inclineRisesLeft = getElement<HTMLButtonElement>("incline-rises-left");
+  const inclineRoughToggle = getElement<HTMLInputElement>("incline-rough-toggle");
+  const inclineFrictionControl = getElement<HTMLElement>("incline-friction-control");
+  const inclineFrictionInput = getElement<HTMLInputElement>("incline-friction-input");
   const groundFrictionControl = groundFrictionInput.closest<HTMLElement>(
     ".ground-friction-control",
   );
   const previousTime = getElement<HTMLButtonElement>("previous-time");
   const nextTime = getElement<HTMLButtonElement>("next-time");
   const playTime = getElement<HTMLButtonElement>("play-time");
+  const playDisabledReason = getElement<HTMLElement>("play-disabled-reason");
   const resetTime = getElement<HTMLButtonElement>("reset-time");
   const timeInput = getElement<HTMLInputElement>("time-input");
   const timeExactValue = getElement<HTMLButtonElement>("time-exact-value");
@@ -438,6 +600,7 @@ export function createControls(callbacks: ControlCallbacks): Controls {
   let exactTimeDisplaySuppressed = false;
   let isEditingExactTime = false;
   let currentParticleMassText = particleMassInput.value;
+  let currentParticleName = particleNameInput.value;
   let currentParticleInitialVelocityText = {
     x: particleInitialVelocityXInput.value,
     y: particleInitialVelocityYInput.value,
@@ -468,6 +631,7 @@ export function createControls(callbacks: ControlCallbacks): Controls {
   let editingExactInitialVelocityField: InitialVelocityField | null = null;
   let currentParticlePauseTargetText = particlePauseTargetInput.value;
   let currentGroundFriction = Number(groundFrictionInput.value);
+  let currentStringLengthText = connectedLengthInput.value;
   let currentTool: Tool = "select";
   let selectedParticleTab: ParticlePropertiesTab = "general";
   const particleTabScrollPositions: Record<ParticlePropertiesTab, number> = {
@@ -588,20 +752,55 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     particleTabScrollPositions[selectedParticleTab] = particlePropertiesScroll.scrollTop;
   });
 
+  connectString.addEventListener("click", callbacks.onConnectWithString);
+  connectedLengthInput.addEventListener("change", () => {
+    const enteredText = connectedLengthInput.value.trim();
+    const length = parseNonNegativeProperty(enteredText);
+    if (length === null) {
+      connectedLengthInput.value = currentStringLengthText;
+      connectedLengthInput.setAttribute("aria-invalid", "true");
+      connectedLengthError.textContent = "Enter a non-negative value with up to 3 decimal places.";
+      return;
+    }
+    if (!callbacks.onStringLengthChange(length, enteredText)) {
+      connectedLengthInput.value = currentStringLengthText;
+      connectedLengthInput.setAttribute("aria-invalid", "true");
+      connectedLengthError.textContent =
+        "Length cannot be smaller than the current particle separation.";
+      return;
+    }
+    currentStringLengthText = enteredText;
+    connectedLengthInput.removeAttribute("aria-invalid");
+    connectedLengthError.textContent = "";
+  });
+
   const renderSelectedKinematicComponent = (): void => {
     const selection = currentParticleSelection;
     if (!selection) return;
 
+    if (selection.inclineKinematicsActive) selectedKinematicAxis = "y";
+
     const isVertical = selectedKinematicAxis === "y";
+    kinematicVertical.textContent = selection.inclineKinematicsActive
+      ? "Parallel to incline"
+      : "Vertical";
+    kinematicHorizontal.hidden = selection.inclineKinematicsActive;
+    kinematicComponentSelector.classList.toggle(
+      "is-single-component",
+      selection.inclineKinematicsActive,
+    );
     kinematicVertical.classList.toggle("is-active", isVertical);
     kinematicHorizontal.classList.toggle("is-active", !isVertical);
     kinematicVertical.setAttribute("aria-pressed", String(isVertical));
     kinematicHorizontal.setAttribute("aria-pressed", String(!isVertical));
-    const usesSuvat = isVertical || selection.horizontalAccelerated;
+    const usesSuvat = selection.inclineKinematicsActive ||
+      isVertical || selection.horizontalAccelerated;
     kinematicQuantityRows.get("u")?.toggleAttribute("hidden", !usesSuvat);
     kinematicQuantityRows.get("a")?.toggleAttribute("hidden", !usesSuvat);
     suvatTitle.textContent = usesSuvat ? "SUVAT" : "Horizontal motion";
-    suvatCalculationDialogTitle.textContent = isVertical
+    suvatCalculationDialogTitle.textContent = selection.inclineKinematicsActive
+      ? "Along-Incline SUVAT Calculation"
+      : isVertical
       ? "SUVAT Calculation"
       : selection.horizontalAccelerated
         ? "Horizontal SUVAT Calculation"
@@ -752,13 +951,45 @@ export function createControls(callbacks: ControlCallbacks): Controls {
 
   const closeExpandedSuvatEquation = (): void => {
     if (suvatCalculationDialog.open) suvatCalculationDialog.close();
+    suvatCalculationDialogEquation.style.removeProperty("margin-top");
     expandedSuvatEquationId = null;
     expandedForceCalculationId = null;
   };
 
+  const updateExpandedCalculationAlignment = (): void => {
+    suvatCalculationDialogEquation.style.removeProperty("margin-top");
+    if (!suvatCalculationDialog.open) return;
+
+    const contentStyle = getComputedStyle(suvatCalculationDialogContent);
+    const verticalPadding =
+      Number.parseFloat(contentStyle.paddingTop) +
+      Number.parseFloat(contentStyle.paddingBottom);
+    const availableHeight = suvatCalculationDialogContent.clientHeight -
+      verticalPadding;
+    const calculationHeight = Math.max(
+      suvatCalculationDialogEquation.offsetHeight,
+      suvatCalculationDialogEquation.scrollHeight,
+    );
+    if (calculationHeight <= availableHeight) {
+      const headerHeight = suvatCalculationDialogHeader.getBoundingClientRect().height;
+      const centredTopMargin = Math.max(
+        0,
+        (availableHeight - headerHeight - calculationHeight) / 2,
+      );
+      suvatCalculationDialogEquation.style.marginTop = `${centredTopMargin}px`;
+    }
+  };
+
+  const scheduleExpandedCalculationAlignment = (): void => {
+    requestAnimationFrame(updateExpandedCalculationAlignment);
+  };
+
+  window.addEventListener("resize", scheduleExpandedCalculationAlignment);
+
   function refreshExpandedCalculation(): void {
     if (expandedForceCalculationId) {
       populateExpandedForceCalculation(expandedForceCalculationId);
+      scheduleExpandedCalculationAlignment();
       return;
     }
     if (!expandedSuvatEquationId) return;
@@ -770,7 +1001,8 @@ export function createControls(callbacks: ControlCallbacks): Controls {
       return;
     }
 
-    populateSuvatEquationElement(suvatCalculationDialogEquation, equation);
+    populateSuvatEquationElement(suvatCalculationDialogEquation, equation, true);
+    scheduleExpandedCalculationAlignment();
   }
 
   const openExpandedSuvatEquation = (equationId: string): void => {
@@ -781,8 +1013,9 @@ export function createControls(callbacks: ControlCallbacks): Controls {
 
     expandedForceCalculationId = null;
     expandedSuvatEquationId = equation.id;
-    populateSuvatEquationElement(suvatCalculationDialogEquation, equation);
+    populateSuvatEquationElement(suvatCalculationDialogEquation, equation, true);
     if (!suvatCalculationDialog.open) suvatCalculationDialog.showModal();
+    scheduleExpandedCalculationAlignment();
     closeSuvatCalculationDialog.focus();
   };
 
@@ -842,33 +1075,56 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     if (!formula || !substitution || !result || !squareRoot) return;
 
     const display = selection.forceDisplay;
-    suvatCalculationDialog.classList.add("force-calculation-mode");
+    const inclineResolution = selection.inclineForceResolution;
     suvatCalculationDialogEquation.classList.add("force-modal-equation");
     formula.hidden = true;
     formula.replaceChildren();
     squareRoot.classList.add("is-hidden");
     squareRoot.replaceChildren();
-    suvatCalculationDialogTitle.textContent = calculationId === "resolve-x"
-      ? "Resolve horizontally"
-      : calculationId === "resolve-y"
-        ? "Resolve vertically"
-        : "F = ma";
+    const calculationTitles: Record<ForceCalculationId, string> = {
+      "resolve-parallel": "Resolve parallel to incline",
+      "resolve-perpendicular": "Resolve perpendicular to incline",
+      "resolve-x": "Resolve horizontally",
+      "resolve-y": "Resolve vertically",
+      fma: "F = ma",
+    };
+    suvatCalculationDialogTitle.textContent = calculationTitles[calculationId];
 
-    if (calculationId === "resolve-x" || calculationId === "resolve-y") {
-      const axis = calculationId === "resolve-x" ? "x" : "y";
-      const terms = display.forces.map((force) =>
-        formatWorkingValue(force[axis])
-      );
-      const resultant = formatWorkingValue(display.resultant[axis]);
+    if (calculationId !== "fma") {
+      const inclineAxis = calculationId === "resolve-parallel"
+        ? "parallel"
+        : calculationId === "resolve-perpendicular"
+          ? "perpendicular"
+          : null;
+      if (inclineAxis && !inclineResolution) {
+        closeExpandedSuvatEquation();
+        return;
+      }
+      const worldAxis = calculationId === "resolve-x" ? "x" : "y";
+      const axis = inclineAxis ?? worldAxis;
+      const values = inclineAxis === "parallel"
+        ? inclineResolution?.parallelForces ?? []
+        : inclineAxis === "perpendicular"
+          ? inclineResolution?.perpendicularForces ?? []
+          : display.forces.map((force) => force[worldAxis]);
+      const resultantValue = inclineAxis === "parallel"
+        ? inclineResolution?.parallelResultant
+        : inclineAxis === "perpendicular"
+          ? inclineResolution?.perpendicularResultant
+          : display.resultant[worldAxis];
+      if (!resultantValue) return;
+      const terms = values.map(formatWorkingValue);
+      const resultant = formatWorkingValue(resultantValue);
       const expression = createForceResolutionExpression(
         axis,
         formatSignedTerms(terms),
         resultant,
+        true,
       );
       setExactValueTooltip(
         expression.finalAnswer,
         resultant,
-        display.resultant[axis].value,
+        resultantValue.value,
       );
       substitution.replaceChildren(expression.element);
       result.replaceChildren();
@@ -877,19 +1133,60 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     }
 
     result.hidden = false;
-    const accelerationLines = (["x", "y"] as const).map((axis) => {
-      const resultant = formatWorkingValue(display.resultant[axis]);
-      const acceleration = formatWorkingValue(display.acceleration[axis]);
+    const accelerationCalculations: Array<{
+      axis: "x" | "y" | "parallel" | "perpendicular";
+      resultantValue: DisplayValue;
+      accelerationValue: DisplayValue;
+    }> = inclineResolution
+      ? [
+          {
+            axis: "parallel",
+            resultantValue: inclineResolution.parallelResultant,
+            accelerationValue: inclineResolution.tangentialAcceleration,
+          },
+          {
+            axis: "perpendicular",
+            resultantValue: inclineResolution.perpendicularResultant,
+            accelerationValue: inclineResolution.perpendicularAcceleration,
+          },
+          {
+            axis: "x",
+            resultantValue: display.resultant.x,
+            accelerationValue: display.acceleration.x,
+          },
+          {
+            axis: "y",
+            resultantValue: display.resultant.y,
+            accelerationValue: display.acceleration.y,
+          },
+        ]
+      : [
+          {
+            axis: "x",
+            resultantValue: display.resultant.x,
+            accelerationValue: display.acceleration.x,
+          },
+          {
+            axis: "y",
+            resultantValue: display.resultant.y,
+            accelerationValue: display.acceleration.y,
+          },
+        ];
+    const accelerationLines = accelerationCalculations.map((calculation) => {
+      const { axis, resultantValue, accelerationValue } = calculation;
+      const resultant = formatWorkingValue(resultantValue);
+      const acceleration = formatWorkingValue(accelerationValue);
       const expression = createForceAccelerationExpression(
         axis,
         resultant,
         selection.massText,
         acceleration,
+        true,
       );
       setExactValueTooltip(
         expression.finalAnswer,
         acceleration,
-        display.acceleration[axis].value,
+        accelerationValue.value,
       );
       const line = document.createElement("span");
       line.className = "suvat-math-line";
@@ -897,7 +1194,7 @@ export function createControls(callbacks: ControlCallbacks): Controls {
       return line;
     });
     substitution.replaceChildren(accelerationLines[0]);
-    result.replaceChildren(accelerationLines[1]);
+    result.replaceChildren(...accelerationLines.slice(1));
   }
 
   const openExpandedForceCalculation = (
@@ -908,6 +1205,7 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     expandedForceCalculationId = calculationId;
     populateExpandedForceCalculation(calculationId);
     if (!suvatCalculationDialog.open) suvatCalculationDialog.showModal();
+    scheduleExpandedCalculationAlignment();
     closeSuvatCalculationDialog.focus();
   };
 
@@ -920,7 +1218,11 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     );
     if (!calculation || !forceAnalysis.contains(calculation)) return null;
     const id = calculation.dataset.forceCalculation;
-    return id === "resolve-x" || id === "resolve-y" || id === "fma"
+    return id === "resolve-parallel" ||
+        id === "resolve-perpendicular" ||
+        id === "resolve-x" ||
+        id === "resolve-y" ||
+        id === "fma"
       ? id
       : null;
   };
@@ -939,16 +1241,62 @@ export function createControls(callbacks: ControlCallbacks): Controls {
 
   const setTool = (tool: Tool): void => {
     currentTool = tool;
-    const isPlacing = tool === "particle";
-    particleTool.classList.toggle("is-active", isPlacing);
-    particleTool.setAttribute("aria-pressed", String(isPlacing));
-    canvas.classList.toggle("is-placing", isPlacing);
+    const particleActive = tool === "particle";
+    const inclineActive = tool === "incline";
+    particleTool.classList.toggle("is-active", particleActive);
+    particleTool.setAttribute("aria-pressed", String(particleActive));
+    inclineTool.classList.toggle("is-active", inclineActive);
+    inclineTool.setAttribute("aria-pressed", String(inclineActive));
+    canvas.classList.toggle("is-placing", particleActive || inclineActive);
   };
 
   particleTool.addEventListener("click", () => {
     const nextTool = currentTool === "particle" ? "select" : "particle";
     setTool(nextTool);
     callbacks.onToolChange(nextTool);
+  });
+
+  inclineTool.addEventListener("click", () => {
+    const nextTool = currentTool === "incline" ? "select" : "incline";
+    setTool(nextTool);
+    callbacks.onToolChange(nextTool);
+  });
+
+  inclineLengthInput.addEventListener("change", () => {
+    const value = parseInclineHorizontalLength(inclineLengthInput.value);
+    if (value === null) {
+      inclineLengthInput.setAttribute("aria-invalid", "true");
+      return;
+    }
+    inclineLengthInput.removeAttribute("aria-invalid");
+    callbacks.onInclineLengthChange(value, inclineLengthInput.value.trim());
+  });
+  inclineAngleInput.addEventListener("change", () => {
+    const value = parseInclineAngle(inclineAngleInput.value);
+    if (value === null) {
+      inclineAngleInput.setAttribute("aria-invalid", "true");
+      return;
+    }
+    inclineAngleInput.removeAttribute("aria-invalid");
+    callbacks.onInclineAngleChange(value, inclineAngleInput.value.trim());
+  });
+  inclineRisesRight.addEventListener("click", () =>
+    callbacks.onInclineDirectionChange("rises-right")
+  );
+  inclineRisesLeft.addEventListener("click", () =>
+    callbacks.onInclineDirectionChange("rises-left")
+  );
+  inclineRoughToggle.addEventListener("change", () =>
+    callbacks.onInclineRoughChange(inclineRoughToggle.checked)
+  );
+  inclineFrictionInput.addEventListener("change", () => {
+    const value = parseGravity(inclineFrictionInput.value);
+    if (value === null) {
+      inclineFrictionInput.setAttribute("aria-invalid", "true");
+      return;
+    }
+    inclineFrictionInput.removeAttribute("aria-invalid");
+    callbacks.onInclineFrictionChange(value, inclineFrictionInput.value.trim());
   });
 
   removeParticle.addEventListener("click", callbacks.onRemove);
@@ -991,7 +1339,26 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     callbacks.onParticleMassChange(result, enteredText);
   });
 
-  addAppliedForce.addEventListener("click", callbacks.onAddAppliedForce);
+  particleNameInput.addEventListener("change", () => {
+    const name = normalizeParticleName(particleNameInput.value);
+    if (name === null) {
+      particleNameInput.value = currentParticleName;
+      particleNameInput.setAttribute("aria-invalid", "true");
+      return;
+    }
+    currentParticleName = name;
+    particleNameInput.value = name;
+    particleNameInput.removeAttribute("aria-invalid");
+    callbacks.onParticleNameChange(name);
+  });
+  particleNameInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") particleNameInput.blur();
+  });
+  particleShapeSelect.addEventListener("change", () => {
+    callbacks.onParticleShapeChange(particleShapeSelect.value as ParticleShape);
+  });
+
+  attachStableButtonPress(addAppliedForce, callbacks.onAddAppliedForce);
   showResultantForceToggle.addEventListener("change", () => {
     callbacks.onShowResultantForceChange(showResultantForceToggle.checked);
   });
@@ -1053,7 +1420,7 @@ export function createControls(callbacks: ControlCallbacks): Controls {
       ? particleInitialSpeedInput
       : particleInitialAngleInput;
     const changedValue = changedField === "speed"
-      ? parsePositiveProperty(changedInput.value)
+      ? parseNonNegativeProperty(changedInput.value)
       : parseAngle(changedInput.value);
     if (changedValue === null) {
       const input = changedField === "speed"
@@ -1289,6 +1656,7 @@ export function createControls(callbacks: ControlCallbacks): Controls {
       weightText,
       display.weightMagnitude.value,
     );
+    setForceDirectionArrow(particleWeightDirection, display.weightDirection);
     normalReactionRow.hidden = display.normalReaction === null;
     if (display.normalReaction) {
       const reactionText = formatWorkingValue(display.normalReaction);
@@ -1299,13 +1667,65 @@ export function createControls(callbacks: ControlCallbacks): Controls {
         reactionText,
         display.normalReaction.value,
       );
+      if (display.normalReactionDirection) {
+        setForceDirectionArrow(
+          particleNormalReactionDirection,
+          display.normalReactionDirection,
+        );
+      }
     } else {
       particleNormalReactionValue.replaceChildren();
       setExactValueTooltip(particleNormalReactionValue, null, 0);
     }
+    frictionRow.hidden = display.friction === null;
+    if (display.friction && display.frictionLimit && display.frictionRegime) {
+      const frictionText = formatWorkingValue(display.friction);
+      const limitText = formatWorkingValue(display.frictionLimit);
+      particleFrictionValue.replaceChildren(
+        createMathExpression(`F = ${frictionText} N`),
+      );
+      setExactValueTooltip(
+        particleFrictionValue,
+        frictionText,
+        display.friction.value,
+      );
+      const relation = display.frictionRegime === "static" ? "≤" : "=";
+      particleFrictionCondition.replaceChildren(
+        createMathExpression(`F ${relation} μR = ${limitText} N`),
+      );
+      if (display.frictionDirection) {
+        setForceDirectionArrow(
+          particleFrictionDirection,
+          display.frictionDirection,
+        );
+      }
+    } else {
+      particleFrictionValue.replaceChildren();
+      particleFrictionCondition.replaceChildren();
+      setExactValueTooltip(particleFrictionValue, null, 0);
+    }
+    tensionRow.hidden = display.tension === null;
+    if (display.tension && display.tensionDirection) {
+      const tensionText = formatWorkingValue(display.tension);
+      particleTensionValue.replaceChildren(
+        createMathExpression(`T = ${tensionText} N`),
+      );
+      setExactValueTooltip(
+        particleTensionValue,
+        tensionText,
+        display.tension.value,
+      );
+      setForceDirectionArrow(
+        particleTensionDirection,
+        display.tensionDirection,
+      );
+    } else {
+      particleTensionValue.replaceChildren();
+      setExactValueTooltip(particleTensionValue, null, 0);
+    }
     const renderResolutionLine = (
       element: HTMLElement,
-      axis: "x" | "y",
+      axis: "x" | "y" | "parallel" | "perpendicular",
       terms: string,
       result: string,
       value: { value: number },
@@ -1314,25 +1734,89 @@ export function createControls(callbacks: ControlCallbacks): Controls {
       element.replaceChildren(expression.element);
       setExactValueTooltip(expression.finalAnswer, result, value.value);
     };
-    const horizontalTerms = display.forces.map((force) =>
-      formatWorkingValue(force.x)
-    );
-    const verticalTerms = display.forces.map((force) =>
-      formatWorkingValue(force.y)
-    );
+    const inclineResolution = selection.inclineForceResolution;
+    forceResolutionParallelRow.hidden = !inclineResolution;
+    forceResolutionPerpendicularRow.hidden = !inclineResolution;
+    forceAccelerationParallel.hidden = !inclineResolution;
+    forceAccelerationPerpendicular.hidden = !inclineResolution;
+
+    if (inclineResolution) {
+      const parallelResultant = formatWorkingValue(
+        inclineResolution.parallelResultant,
+      );
+      const perpendicularResultant = formatWorkingValue(
+        inclineResolution.perpendicularResultant,
+      );
+      renderResolutionLine(
+        forceResultantParallel,
+        "parallel",
+        formatSignedTerms(
+          inclineResolution.parallelForces.map(formatWorkingValue),
+        ),
+        parallelResultant,
+        inclineResolution.parallelResultant,
+      );
+      renderResolutionLine(
+        forceResultantPerpendicular,
+        "perpendicular",
+        formatSignedTerms(
+          inclineResolution.perpendicularForces.map(formatWorkingValue),
+        ),
+        perpendicularResultant,
+        inclineResolution.perpendicularResultant,
+      );
+      const parallelAcceleration = formatWorkingValue(
+        inclineResolution.tangentialAcceleration,
+      );
+      const perpendicularAcceleration = formatWorkingValue(
+        inclineResolution.perpendicularAcceleration,
+      );
+      const parallelExpression = createForceAccelerationExpression(
+        "parallel",
+        parallelResultant,
+        selection.massText,
+        parallelAcceleration,
+      );
+      forceAccelerationParallel.replaceChildren(parallelExpression.element);
+      setExactValueTooltip(
+        parallelExpression.finalAnswer,
+        parallelAcceleration,
+        inclineResolution.tangentialAcceleration.value,
+      );
+      const perpendicularExpression = createForceAccelerationExpression(
+        "perpendicular",
+        perpendicularResultant,
+        selection.massText,
+        perpendicularAcceleration,
+      );
+      forceAccelerationPerpendicular.replaceChildren(
+        perpendicularExpression.element,
+      );
+      setExactValueTooltip(
+        perpendicularExpression.finalAnswer,
+        perpendicularAcceleration,
+        inclineResolution.perpendicularAcceleration.value,
+      );
+    } else {
+      forceResultantParallel.replaceChildren();
+      forceResultantPerpendicular.replaceChildren();
+      forceAccelerationParallel.replaceChildren();
+      forceAccelerationPerpendicular.replaceChildren();
+    }
+
     const resultantX = formatWorkingValue(display.resultant.x);
     const resultantY = formatWorkingValue(display.resultant.y);
     renderResolutionLine(
       forceResultantX,
       "x",
-      formatSignedTerms(horizontalTerms),
+      formatSignedTerms(display.forces.map((force) => formatWorkingValue(force.x))),
       resultantX,
       display.resultant.x,
     );
     renderResolutionLine(
       forceResultantY,
       "y",
-      formatSignedTerms(verticalTerms),
+      formatSignedTerms(display.forces.map((force) => formatWorkingValue(force.y))),
       resultantY,
       display.resultant.y,
     );
@@ -1514,8 +1998,10 @@ export function createControls(callbacks: ControlCallbacks): Controls {
 
   return {
     canvas,
+    canvasMathOverlay,
     deleteTarget: removeParticle,
     particleSource: particleTool,
+    inclineSource: inclineTool,
     setTool,
     setSelected: (hasSelection) => {
       removeParticle.disabled = !hasSelection;
@@ -1530,9 +2016,18 @@ export function createControls(callbacks: ControlCallbacks): Controls {
         "is-hidden",
         selection?.type !== "ground",
       );
+      inclineProperties.classList.toggle(
+        "is-hidden",
+        selection?.type !== "incline",
+      );
+      connectedSystemProperties.classList.toggle(
+        "is-hidden",
+        selection?.type !== "string",
+      );
 
       if (selection?.type === "particle") {
         currentParticleSelection = selection;
+        currentParticleName = selection.name;
         currentParticleMassText = selection.massText;
         currentParticleInitialVelocityText = { ...selection.initialVelocityText };
         currentParticleInitialVelocityValues = {
@@ -1544,6 +2039,11 @@ export function createControls(callbacks: ControlCallbacks): Controls {
         };
         particlePositionX.textContent = formatNumber(selection.position.x);
         particlePositionY.textContent = formatNumber(selection.position.y);
+        if (document.activeElement !== particleNameInput) {
+          particleNameInput.value = selection.name;
+        }
+        particleShapeSelect.value = selection.shape;
+        particleNameInput.removeAttribute("aria-invalid");
         if (document.activeElement !== particleMassInput) {
           particleMassInput.value = selection.massText;
         }
@@ -1614,6 +2114,8 @@ export function createControls(callbacks: ControlCallbacks): Controls {
             : "Vertical displacement in metres",
         );
         particlePauseTargetInput.removeAttribute("aria-invalid");
+        connectString.disabled = false;
+        connectStringMessage.textContent = selection.stringConnectionMessage ?? "";
         renderSelectedKinematicComponent();
         particlePropertiesScroll.scrollTop = preservedScrollTop;
         particleTabScrollPositions[selectedParticleTab] =
@@ -1629,6 +2131,86 @@ export function createControls(callbacks: ControlCallbacks): Controls {
         groundFrictionInput.disabled = !selection.rough;
         groundFrictionInput.value = formatNumber(selection.friction);
         groundFrictionInput.removeAttribute("aria-invalid");
+      } else if (selection?.type === "incline") {
+        if (motionGraphDialog.open) motionGraphDialog.close();
+        currentParticleSelection = null;
+        currentSuvatEquations = [];
+        closeExpandedSuvatEquation();
+        inclinePositionX.textContent = formatNumber(selection.position.x);
+        inclinePositionY.textContent = formatNumber(selection.position.y);
+        inclineAngleInput.value = selection.angleInput;
+        inclineLengthInput.value = selection.horizontalLengthInput;
+        inclineAngleInput.removeAttribute("aria-invalid");
+        inclineLengthInput.removeAttribute("aria-invalid");
+        const risesRight = selection.direction === "rises-right";
+        inclineRisesRight.setAttribute("aria-pressed", String(risesRight));
+        inclineRisesLeft.setAttribute("aria-pressed", String(!risesRight));
+        inclineRisesRight.classList.toggle("is-active", risesRight);
+        inclineRisesLeft.classList.toggle("is-active", !risesRight);
+        inclineRoughToggle.checked = selection.rough;
+        inclineFrictionControl.classList.toggle("is-hidden", !selection.rough);
+        inclineFrictionInput.disabled = !selection.rough;
+        inclineFrictionInput.value = selection.frictionInput;
+        inclineFrictionInput.removeAttribute("aria-invalid");
+      } else if (selection?.type === "string") {
+        if (motionGraphDialog.open) motionGraphDialog.close();
+        currentParticleSelection = null;
+        currentSuvatEquations = [];
+        closeExpandedSuvatEquation();
+        connectedParticleA.textContent = `${selection.particleA.name}, ${formatNumber(selection.particleA.mass)} kg`;
+        connectedParticleB.textContent = `${selection.particleB.name}, ${formatNumber(selection.particleB.mass)} kg`;
+        connectedStringState.textContent = selection.state === "taut" ? "Taut" : "Slack";
+        currentStringLengthText = selection.lengthText;
+        if (document.activeElement !== connectedLengthInput) {
+          connectedLengthInput.value = selection.lengthText;
+        }
+        connectedLengthInput.removeAttribute("aria-invalid");
+        connectedLengthError.textContent = "";
+        const display = selection.display;
+        const independentlyMoving = display.commonAcceleration === null;
+        connectedCommonAccelerationRow.hidden = independentlyMoving;
+        connectedSlackNote.hidden = selection.state !== "slack";
+        connectedForceResolutionSection.hidden = independentlyMoving;
+        connectedFmaSection.hidden = independentlyMoving;
+        if (display.commonAcceleration === null) {
+          connectedAcceleration.textContent = "\u2014";
+          setExactValueTooltip(connectedAcceleration, null, 0);
+          connectedForceResolution.replaceChildren(
+            createConnectedSystemForceResolution(display),
+          );
+          connectedFma.textContent =
+            "The string is slack, so there is no common acceleration.";
+        } else {
+          const accelerationText = formatWorkingValue(display.commonAcceleration);
+          const forceResolution = createConnectedSystemForceResolution(display);
+          const totalMassText = `(${formatWorkingValue(display.endpointA.mass)} + ${formatWorkingValue(display.endpointB.mass)})`;
+          const fmaExpression = createForceAccelerationExpression(
+            display.axis,
+            formatWorkingValue(display.externalResultant),
+            totalMassText,
+            accelerationText,
+            true,
+          );
+          connectedForceResolution.replaceChildren(forceResolution);
+          connectedFma.replaceChildren(fmaExpression.element);
+          setExactValueTooltip(
+            fmaExpression.finalAnswer,
+            accelerationText,
+            display.commonAcceleration.value,
+          );
+          renderConnectedAcceleration(
+            connectedAcceleration,
+            accelerationText,
+            display.commonAcceleration,
+          );
+        }
+        const tensionText = formatWorkingValue(display.tension);
+        connectedTension.replaceChildren(
+          createMathExpression(tensionText),
+        );
+        setExactValueTooltip(connectedTension, tensionText, display.tension.value);
+        connectedBoundaryMessage.textContent = selection.boundaryMessage ?? "";
+        connectedBoundaryMessage.hidden = selection.boundaryMessage === null;
       } else {
         if (motionGraphDialog.open) motionGraphDialog.close();
         currentParticleSelection = null;
@@ -1672,21 +2254,46 @@ export function createControls(callbacks: ControlCallbacks): Controls {
         setExactValueTooltip(timeExactValue, null, time);
         if (document.activeElement !== timeInput) {
           timeInput.value = currentTimeText;
-        }
       }
+    }
       previousTime.disabled = time <= 0;
       resetTime.disabled = time <= 0;
     },
-    setPlaybackState: (state) => {
+    setPlaybackState: (state, blockedReason = null) => {
+      const blocked = state === "blocked";
       playTime.classList.toggle("is-playing", state === "playing");
       playTime.classList.toggle("is-pause-pending", state === "pause-pending");
-      playTime.setAttribute("aria-label", state === "paused" ? "Play" : "Pause");
+      playTime.classList.toggle("is-blocked", blocked);
+      playTime.disabled = blocked;
+      nextTime.classList.toggle("is-blocked", blocked);
+      nextTime.disabled = blocked;
+      playDisabledReason.hidden = !blocked || !blockedReason;
+      playDisabledReason.textContent = blockedReason ?? "";
+      playTime.setAttribute(
+        "aria-label",
+        state === "blocked"
+          ? `Play unavailable${blockedReason ? `: ${blockedReason}` : ""}`
+          : state === "paused"
+            ? "Play"
+            : "Pause",
+      );
     },
     setZoom: (pixelsPerMetre) => {
       resetView.textContent = `${Math.round((pixelsPerMetre / PIXELS_PER_METRE) * 100)}%`;
       scaleLine.style.width = `${pixelsPerMetre}px`;
     },
   };
+}
+
+export function getForceDirectionArrowRotation(vector: Vec2): number {
+  return Math.atan2(-vector.y, vector.x) * 180 / Math.PI;
+}
+
+function setForceDirectionArrow(element: HTMLElement, vector: Vec2): void {
+  element.style.setProperty(
+    "--force-direction-angle",
+    `${getForceDirectionArrowRotation(vector)}deg`,
+  );
 }
 
 function createAutoPauseTimeValue(value: AutoPauseTimeDisplay): Element {
@@ -1733,6 +2340,30 @@ export function defaultBlankInputValue(value: string): string {
 export function parsePositiveProperty(value: string): number | null {
   const parsedValue = parseGravity(value);
   return parsedValue !== null && parsedValue > 0 ? parsedValue : null;
+}
+
+export function normalizeParticleName(value: string): string | null {
+  const name = value.trim();
+  return name.length > 0 && name.length <= 40 ? name : null;
+}
+
+export function parseNonNegativeProperty(value: string): number | null {
+  return parseGravity(value);
+}
+
+export function parseInclineAngle(value: string): number | null {
+  const parsedValue = parseGravity(value);
+  return parsedValue !== null && parsedValue > 0 && parsedValue < 90
+    ? parsedValue
+    : null;
+}
+
+export function parseInclineHorizontalLength(value: string): number | null {
+  const parsedValue = parseGravity(value);
+  return parsedValue !== null &&
+      parsedValue >= MINIMUM_INCLINE_HORIZONTAL_LENGTH
+    ? parsedValue
+    : null;
 }
 
 export function parseTime(value: string): number | null {
@@ -1840,6 +2471,39 @@ export function usesCompactKinematicText(
   return typeof value === "string"
     ? value.includes("/")
     : value.radicand.includes("/");
+}
+
+function createConnectedSystemForceResolution(
+  display: ConnectedSystemDisplay,
+): HTMLElement {
+  const terms = formatSignedTerms([
+    ...display.endpointA.externalForces,
+    ...display.endpointB.externalForces,
+  ]
+      .filter((force) => Math.abs(force.value) > 1e-12)
+      .map(formatWorkingValue));
+  const resultantText = formatWorkingValue(display.externalResultant);
+  const expression = createForceResolutionExpression(
+    display.axis,
+    terms,
+    resultantText,
+    true,
+  );
+  setExactValueTooltip(
+    expression.finalAnswer,
+    resultantText,
+    display.externalResultant.value,
+  );
+  return expression.element;
+}
+
+function renderConnectedAcceleration(
+  output: HTMLOutputElement,
+  accelerationText: string,
+  acceleration: DisplayValue,
+): void {
+  output.replaceChildren(createMathExpression(accelerationText));
+  setExactValueTooltip(output, accelerationText, acceleration.value);
 }
 
 function setExactValueTooltip(
@@ -2005,6 +2669,7 @@ function createExactPhaseTimeMath(
 function populateSuvatEquationElement(
   element: HTMLElement,
   equation: KinematicEquationResult,
+  breakable = false,
 ): void {
   const formula = element.querySelector<HTMLElement>(".suvat-formula");
   const substitution = element.querySelector<HTMLElement>(".suvat-substitution");
@@ -2013,13 +2678,13 @@ function populateSuvatEquationElement(
   if (!formula || !substitution || !result || !squareRoot) return;
 
   element.classList.remove("force-modal-equation");
-  element.closest(".suvat-calculation-dialog")?.classList.remove(
-    "force-calculation-mode",
-  );
   formula.hidden = false;
   result.hidden = false;
-  formula.replaceChildren(createMathExpression(equation.formula));
-  substitution.replaceChildren(createMathExpression(`= ${equation.substitution}`));
+  const createExpression = breakable
+    ? createBreakableMathExpression
+    : createMathExpression;
+  formula.replaceChildren(createExpression(equation.formula));
+  substitution.replaceChildren(createExpression(`= ${equation.substitution}`));
   result.replaceChildren(
     ...equation.finalValues.map((finalValue) => {
       const line = document.createElement("span");

@@ -89,7 +89,7 @@ export function editParticleInitialVelocityAngle(
   convention: AngleConvention,
   enteredText: { speed: string; angle: string },
 ): Particle {
-  if (!(speed > 0)) throw new Error("Initial speed must be greater than zero.");
+  if (!(speed >= 0)) throw new Error("Initial speed must be non-negative.");
   if (!(angleDegrees > -180 && angleDegrees <= 180)) {
     throw new Error("Initial velocity angle must be in the interval (-180, 180].");
   }

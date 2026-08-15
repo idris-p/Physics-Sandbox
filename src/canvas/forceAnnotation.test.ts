@@ -7,6 +7,10 @@ import {
 import { createAppliedForce } from "../model/AppliedForce";
 import { createParticle } from "../model/Particle";
 import { createDefaultSettings } from "../model/SimulationSettings";
+import { createIncline } from "../model/Incline";
+import { getInclineGeometry, pointAtInclineCoordinate } from "../geometry/inclineGeometry";
+import { analyseInclineContactForces } from "../dynamics/inclineContact";
+import { createInclineNormalReactionDisplay } from "../dynamics/inclineForceDisplay";
 import {
   FORCE_ARROW_LENGTH_METRES,
   FORCE_ARROW_LINE_DASH,
@@ -216,6 +220,25 @@ describe("force-arrow annotations", () => {
     });
   });
 
+  it("omits Polar angles for applied forces aligned with an incline axis", () => {
+    const settings = createDefaultSettings();
+    const incline = createIncline("incline", { x: 0, y: 0 });
+    const particle = createParticle("aligned-force", { x: 0, y: 0 });
+    particle.appliedForces = [editAppliedForceMagnitudeDirection(
+      createAppliedForce("push"),
+      10,
+      incline.angleDegrees,
+      settings,
+      { magnitude: "10", angle: incline.angleInput },
+    )];
+
+    expect(getForceAnnotations(particle, settings, 0, incline)[1]).toMatchObject({
+      kind: "magnitude",
+      magnitudeText: "10",
+      magnitude: 10,
+    });
+  });
+
   it("replaces every individual arrow with one red Cartesian resultant", () => {
     const settings = createDefaultSettings();
     settings.gravity = 10;
@@ -267,7 +290,7 @@ describe("force-arrow annotations", () => {
     ]);
   });
 
-  it("keeps axis-aligned Cartesian resultant labels scalar", () => {
+  it("defaults a resultant to Polar notation when no forces are applied", () => {
     const settings = createDefaultSettings();
     const particle = createParticle("weight-resultant", { x: 0, y: 0 });
     particle.showResultantForce = true;
@@ -275,9 +298,10 @@ describe("force-arrow annotations", () => {
     expect(getForceAnnotations(particle, settings)).toEqual([
       expect.objectContaining({
         id: "resultant",
-        kind: "magnitude",
+        kind: "angle",
         colour: RESULTANT_FORCE_COLOUR,
         magnitudeText: "9.8",
+        angleMarker: "none",
       }),
     ]);
   });
@@ -288,5 +312,67 @@ describe("force-arrow annotations", () => {
 
     expect(isZeroResultantForce(particle, settings, 9.8)).toBe(true);
     expect(isZeroResultantForce(particle, settings)).toBe(false);
+  });
+
+  it("draws incline reaction along the outward normal and includes it in the resultant", () => {
+    const settings = createDefaultSettings();
+    const incline = createIncline("incline", { x: 0, y: 0 });
+    const particle = createParticle(
+      "slider",
+      pointAtInclineCoordinate(incline, 5),
+    );
+    particle.initialInclineContact = { inclineId: incline.id, q: 5 };
+    const analysis = analyseInclineContactForces(
+      particle,
+      incline,
+      0,
+      settings.gravity,
+    );
+    const reaction = createInclineNormalReactionDisplay(
+      particle,
+      incline,
+      settings,
+      analysis.normalReactionMagnitude,
+    );
+    if (!reaction) throw new Error("Expected an active reaction.");
+    const geometry = getInclineGeometry(incline);
+
+    const individual = getForceAnnotations(particle, settings, reaction);
+    const reactionDirection = individual.find(
+      (arrow) => arrow.id === "normal-reaction",
+    )?.direction;
+    expect(reactionDirection?.x).toBeCloseTo(geometry.normal.x, 12);
+    expect(reactionDirection?.y).toBeCloseTo(geometry.normal.y, 12);
+    expect(individual.find((arrow) => arrow.id === "weight")?.direction)
+      .toEqual({ x: 0, y: -1 });
+
+    particle.showResultantForce = true;
+    const resultant = getForceAnnotations(particle, settings, reaction, incline);
+    expect(resultant).toHaveLength(1);
+    expect(resultant[0]).toMatchObject({
+      kind: "magnitude",
+      colour: RESULTANT_FORCE_COLOUR,
+    });
+    expect(resultant[0].direction.x).toBeCloseTo(-geometry.tangent.x, 12);
+    expect(resultant[0].direction.y).toBeCloseTo(-geometry.tangent.y, 12);
+  });
+
+  it("renders derived Tension toward the opposite endpoint", () => {
+    const particle = createParticle("connected", { x: 0, y: 0 });
+    const annotations = getForceAnnotations(
+      particle,
+      createDefaultSettings(),
+      0,
+      null,
+      null,
+      { magnitude: 6, vector: { x: 6, y: 0 } },
+    );
+
+    expect(annotations).toContainEqual(expect.objectContaining({
+      id: "tension",
+      label: "Tension",
+      magnitude: 6,
+      direction: { x: 1, y: 0 },
+    }));
   });
 });

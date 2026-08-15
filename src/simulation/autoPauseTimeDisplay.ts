@@ -1,7 +1,9 @@
 import {
+  addDisplayValues,
   addRationals,
   convertEnteredScalarText,
   derivedValue,
+  divideDisplayValues,
   divideRationals,
   exactExpression,
   exactSurdValue,
@@ -164,22 +166,79 @@ export function createAutoPauseTimeDisplayValue(
   }
   if (display.kind === "square-root") {
     const radicand = rationalFromFraction(display.radicand);
-    if (
-      radicand &&
-      radicand.numerator >= 0n &&
-      radicand.denominator === 1n
-    ) {
-      return exactSurdValue(
+    if (radicand && radicand.numerator >= 0n) {
+      return createRationalSquareRootDisplayValue(
         value,
-        {
-          numerator: display.negative ? -1n : 1n,
-          denominator: 1n,
-        },
-        radicand.numerator,
+        radicand,
+        display.negative,
       );
     }
   }
+  if (display.kind === "quadratic-surd") {
+    const linearTerm = rationalFromFraction(display.linearTerm);
+    const radicand = rationalFromFraction(display.radicand);
+    const denominator = rationalFromFraction(display.denominator);
+    if (
+      linearTerm &&
+      radicand &&
+      radicand.numerator >= 0n &&
+      denominator &&
+      denominator.numerator !== 0n
+    ) {
+      const rootMagnitude = Math.sqrt(
+        Number(radicand.numerator) / Number(radicand.denominator),
+      );
+      const subtractRoot = display.radicalSign === "minus";
+      const signedRoot = createRationalSquareRootDisplayValue(
+        subtractRoot ? -rootMagnitude : rootMagnitude,
+        radicand,
+        subtractRoot,
+      );
+      const linearValue =
+        Number(linearTerm.numerator) / Number(linearTerm.denominator);
+      const numerator = addDisplayValues(
+        linearValue + signedRoot.value,
+        derivedValue(linearValue, linearTerm),
+        signedRoot,
+      );
+      const exactValue = divideDisplayValues(
+        value,
+        numerator,
+        derivedValue(
+          Number(denominator.numerator) / Number(denominator.denominator),
+          denominator,
+        ),
+      );
+      return {
+        ...exactValue,
+        exactText: formatAutoPauseTimeExactText(display),
+      };
+    }
+  }
   return exactExpression(value, formatAutoPauseTimeExactText(display));
+}
+
+function createRationalSquareRootDisplayValue(
+  value: number,
+  radicand: Rational,
+  negative: boolean,
+): DisplayValue {
+  const exactRoot = squareRootRational(radicand);
+  if (exactRoot) {
+    return derivedValue(value, {
+      numerator: negative ? -exactRoot.numerator : exactRoot.numerator,
+      denominator: exactRoot.denominator,
+    });
+  }
+
+  return exactSurdValue(
+    value,
+    {
+      numerator: negative ? -1n : 1n,
+      denominator: radicand.denominator,
+    },
+    radicand.numerator * radicand.denominator,
+  );
 }
 
 export function getGroundContactPauseTimeDisplay(

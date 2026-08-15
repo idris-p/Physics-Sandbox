@@ -203,4 +203,32 @@ describe("exact auto-pause time display", () => {
       radicalSign: "minus",
     });
   });
+
+  it("retains exact algebra behind a decimal quadratic-surd display", () => {
+    const particle = createParticle("descending-target", { x: 0, y: 5 });
+    particle.initialVelocity.y = 10;
+    particle.initialVelocitySource = "components";
+    particle.initialVelocityInput.y = { text: "10", positiveDirection: "up" };
+    particle.pauseHeightAboveGround = 1.5;
+    particle.pauseHeightAboveGroundText = "1.5";
+    const eventTime = (10 + Math.sqrt(168.6)) / 9.8;
+
+    const display = getVerticalTargetPauseTimeDisplay(
+      particle,
+      "9.8",
+      true,
+      0,
+      eventTime,
+    );
+
+    expect(display).toEqual({
+      kind: "quadratic-surd",
+      linearTerm: "10",
+      radicand: "168.6",
+      denominator: "9.8",
+      radicalSign: "plus",
+    });
+    expect(formatWorkingValue(createAutoPauseTimeDisplayValue(eventTime, display!)))
+      .toBe("(10 + √(168.6))/9.8");
+  });
 });

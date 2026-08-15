@@ -4,10 +4,15 @@ import {
   defaultBlankInputValue,
   formatPlaybackTime,
   formatTime,
+  getForceDirectionArrowRotation,
   getExactInitialVelocityFields,
   getMotionGraphAnnotationTooltip,
+  normalizeParticleName,
   parseAngle,
   parseGravity,
+  parseInclineAngle,
+  parseInclineHorizontalLength,
+  parseNonNegativeProperty,
   parsePositiveProperty,
   parseSignedValue,
   parseTime,
@@ -32,6 +37,26 @@ describe("numeric input zero editing", () => {
   });
 });
 
+describe("particle names", () => {
+  it("trims a non-empty name", () => {
+    expect(normalizeParticleName("  Cart  ")).toBe("Cart");
+  });
+
+  it("rejects blank names and names longer than 40 characters", () => {
+    expect(normalizeParticleName("   ")).toBeNull();
+    expect(normalizeParticleName("a".repeat(41))).toBeNull();
+  });
+});
+
+describe("force direction arrows", () => {
+  it("converts world directions to screen rotations", () => {
+    expect(getForceDirectionArrowRotation({ x: 1, y: 0 })).toBeCloseTo(0);
+    expect(getForceDirectionArrowRotation({ x: 0, y: 1 })).toBeCloseTo(-90);
+    expect(getForceDirectionArrowRotation({ x: 0, y: -1 })).toBeCloseTo(90);
+    expect(getForceDirectionArrowRotation({ x: -0.5, y: Math.sqrt(3) / 2 })).toBeCloseTo(-120);
+  });
+});
+
 describe("parseGravity", () => {
   it.each(["9.8", "9.81", "1.625", "0", ".125"])("accepts %s", (value) => {
     expect(parseGravity(value)).toBe(Number(value));
@@ -49,6 +74,36 @@ describe("parsePositiveProperty", () => {
 
   it.each(["0", "-0.1", "1.0001", ""])("rejects %s", (value) => {
     expect(parsePositiveProperty(value)).toBeNull();
+  });
+});
+
+describe("parseNonNegativeProperty", () => {
+  it.each(["0", "0.0", "1", ".125"])("accepts %s", (value) => {
+    expect(parseNonNegativeProperty(value)).toBe(Number(value));
+  });
+
+  it.each(["-0.1", "1.0001", ""])("rejects %s", (value) => {
+    expect(parseNonNegativeProperty(value)).toBeNull();
+  });
+});
+
+describe("parseInclineAngle", () => {
+  it.each(["0.001", "30", "45.125", "89.999"])("accepts %s", (value) => {
+    expect(parseInclineAngle(value)).toBe(Number(value));
+  });
+
+  it.each(["0", "90", "-30", "30.0001", ""])("rejects %s", (value) => {
+    expect(parseInclineAngle(value)).toBeNull();
+  });
+});
+
+describe("parseInclineHorizontalLength", () => {
+  it.each(["10", "10.001", "25.5"])("accepts %s", (value) => {
+    expect(parseInclineHorizontalLength(value)).toBe(Number(value));
+  });
+
+  it.each(["9.999", "0", "10.0001", ""])("rejects %s", (value) => {
+    expect(parseInclineHorizontalLength(value)).toBeNull();
   });
 });
 

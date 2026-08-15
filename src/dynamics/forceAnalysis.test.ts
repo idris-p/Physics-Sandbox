@@ -47,4 +47,29 @@ describe("particle force analysis", () => {
     expect(analysis.resultant).toEqual({ x: 7, y: -31 });
     expect(analysis.acceleration).toEqual({ x: 1.75, y: -7.75 });
   });
+
+  it("includes derived Tension without persisting it as an applied force", () => {
+    const particle = createParticle("connected", { x: 0, y: 0 });
+    const analysis = analyseParticleForces(
+      particle,
+      0,
+      0,
+      { x: 0, y: 0 },
+      [{
+        id: "tension",
+        kind: "tension",
+        label: "Tension",
+        vector: { x: 7, y: 0 },
+      }],
+    );
+
+    expect(analysis.resultant).toEqual({ x: 7, y: 0 });
+    expect(analysis.forces).toContainEqual({
+      id: "tension",
+      kind: "tension",
+      label: "Tension",
+      vector: { x: 7, y: 0 },
+    });
+    expect(particle.appliedForces).toEqual([]);
+  });
 });

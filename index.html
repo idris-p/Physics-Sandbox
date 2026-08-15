@@ -13,6 +13,7 @@
     <main class="app-shell">
       <section class="workspace" aria-label="Mechanics diagram">
         <canvas id="scene-canvas" aria-label="Metre grid for placing and selecting particles"></canvas>
+        <div id="canvas-math-overlay" class="canvas-math-overlay" aria-hidden="true"></div>
         <div id="canvas-exact-tooltip" class="exact-value-tooltip" role="tooltip" hidden></div>
 
         <div class="hotbar" role="toolbar" aria-label="Items">
@@ -29,12 +30,26 @@
           </button>
 
           <button
+            id="incline-tool"
+            class="hotbar-slot"
+            type="button"
+            data-tooltip="Incline"
+            aria-label="Incline: click to select or drag onto the scene"
+            aria-pressed="false"
+          >
+            <svg class="hotbar-incline" viewBox="0 0 40 32" aria-hidden="true">
+              <path d="M4 27h32L36 9 4 27Z" />
+            </svg>
+            <span class="slot-key" aria-hidden="true">2</span>
+          </button>
+
+          <button
             id="remove-particle"
               class="hotbar-slot delete-slot"
               type="button"
               data-tooltip="Delete"
               disabled
-            aria-label="Remove selected particle"
+            aria-label="Delete selected object"
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13M10 10v7M14 10v7" />
@@ -43,13 +58,13 @@
         </div>
 
         <div class="scene-properties-position">
-        <div class="scene-properties-shell">
+        <div class="scene-properties-shell is-collapsed">
           <button
             id="toggle-scene-properties"
             class="collapse-properties"
             type="button"
-            aria-label="Collapse scene properties"
-            aria-expanded="true"
+            aria-label="Expand scene properties"
+            aria-expanded="false"
           >
             <svg class="chevron-icon" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M8 4l8 8-8 8" />
@@ -188,6 +203,24 @@
             role="tabpanel"
             aria-labelledby="particle-tab-general"
           >
+          <label class="particle-property-row particle-name-row" for="particle-name-input">
+            <span class="particle-property-name">Name</span>
+            <input
+              id="particle-name-input"
+              class="particle-name-input"
+              type="text"
+              maxlength="40"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </label>
+          <label class="particle-property-row particle-shape-row" for="particle-shape-select">
+            <span class="particle-property-name">Shape</span>
+            <select id="particle-shape-select" class="particle-shape-select">
+              <option value="circle">Circle</option>
+              <option value="square">Square</option>
+            </select>
+          </label>
           <div class="particle-property-row">
             <span class="particle-property-name">Position</span>
             <div class="position-values">
@@ -240,6 +273,10 @@
               </label>
             </div>
           </div>
+          <button id="connect-string" class="add-applied-force connect-string-button" type="button">
+            Connect with string
+          </button>
+          <p id="connect-string-message" class="connect-string-message" role="status"></p>
           </section>
           <section
             id="particle-forces-content"
@@ -261,11 +298,70 @@
             <section class="force-group" aria-label="Automatic forces">
               <div class="weight-force-row">
                 <span>Weight</span>
-                <output id="particle-weight-value">W = mg = 1 × 9.8 = 9.8 N</output>
+                <div class="automatic-force-value">
+                  <output id="particle-weight-value">W = mg = 1 × 9.8 = 9.8 N</output>
+                  <span
+                    id="particle-weight-direction"
+                    class="force-direction-arrow"
+                    role="img"
+                    aria-label="Weight direction"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M5 12h14m-5.5-5.5L19 12l-5.5 5.5" />
+                    </svg>
+                  </span>
+                </div>
               </div>
               <div id="normal-reaction-row" class="weight-force-row" hidden>
                 <span>Normal reaction</span>
-                <output id="particle-normal-reaction-value">R = 9.8 N</output>
+                <div class="automatic-force-value">
+                  <output id="particle-normal-reaction-value">R = 9.8 N</output>
+                  <span
+                    id="particle-normal-reaction-direction"
+                    class="force-direction-arrow"
+                    role="img"
+                    aria-label="Normal reaction direction"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M5 12h14m-5.5-5.5L19 12l-5.5 5.5" />
+                    </svg>
+                  </span>
+                </div>
+              </div>
+              <div id="friction-row" class="weight-force-row" hidden>
+                <span>Friction</span>
+                <div class="automatic-force-value friction-force-value">
+                  <div class="friction-force-primary">
+                    <output id="particle-friction-value">F = 4 N</output>
+                    <span
+                      id="particle-friction-direction"
+                      class="force-direction-arrow"
+                      role="img"
+                      aria-label="Friction direction"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M5 12h14m-5.5-5.5L19 12l-5.5 5.5" />
+                      </svg>
+                    </span>
+                  </div>
+                  <small id="particle-friction-condition"></small>
+                </div>
+              </div>
+              <div id="tension-row" class="weight-force-row" hidden>
+                <span>Tension</span>
+                <div class="automatic-force-value">
+                  <output id="particle-tension-value">T = 0 N</output>
+                  <span
+                    id="particle-tension-direction"
+                    class="force-direction-arrow"
+                    role="img"
+                    aria-label="Tension direction"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M5 12h14m-5.5-5.5L19 12l-5.5 5.5" />
+                    </svg>
+                  </span>
+                </div>
               </div>
             </section>
             <section class="force-group" aria-labelledby="applied-forces-title">
@@ -288,6 +384,30 @@
               </div>
             </section>
             <div id="force-analysis" class="force-analysis">
+              <div
+                id="force-resolution-parallel-row"
+                class="force-analysis-row"
+                data-force-calculation="resolve-parallel"
+                role="button"
+                tabindex="0"
+                aria-label="Open enlarged force resolution parallel to incline"
+                hidden
+              >
+                <strong>Resolve parallel to incline</strong>
+                <span id="force-resultant-parallel"></span>
+              </div>
+              <div
+                id="force-resolution-perpendicular-row"
+                class="force-analysis-row"
+                data-force-calculation="resolve-perpendicular"
+                role="button"
+                tabindex="0"
+                aria-label="Open enlarged force resolution perpendicular to incline"
+                hidden
+              >
+                <strong>Resolve perpendicular to incline</strong>
+                <span id="force-resultant-perpendicular"></span>
+              </div>
               <div
                 class="force-analysis-row"
                 data-force-calculation="resolve-x"
@@ -316,6 +436,8 @@
                 aria-label="Open enlarged F equals ma calculation"
               >
                 <strong>F = ma</strong>
+                <span id="force-acceleration-parallel" hidden></span>
+                <span id="force-acceleration-perpendicular" hidden></span>
                 <span id="force-acceleration-x"></span>
                 <span id="force-acceleration-y"></span>
               </div>
@@ -382,7 +504,7 @@
                   </div>
                 </div>
               </div>
-              <div class="kinematic-component-selector" role="group" aria-label="Kinematics component">
+              <div id="kinematic-component-selector" class="kinematic-component-selector" role="group" aria-label="Kinematics component">
                 <button id="kinematic-vertical" class="is-active" type="button" aria-pressed="true">Vertical</button>
                 <button id="kinematic-horizontal" type="button" aria-pressed="false">Horizontal</button>
               </div>
@@ -449,6 +571,110 @@
               <span class="toggle-track" aria-hidden="true"><span></span></span>
               <span class="visually-hidden">Rough ground enabled</span>
             </label>
+          </div>
+        </aside>
+
+        <aside
+          id="incline-properties"
+          class="incline-properties is-hidden"
+          aria-labelledby="incline-properties-title"
+        >
+          <h2 id="incline-properties-title">Incline Properties</h2>
+          <div class="particle-property-row incline-position-row">
+            <span class="particle-property-name">Start position</span>
+            <div class="position-values">
+              <div class="position-value">
+                <i>x</i><span>=</span><output id="incline-position-x">0</output><span>m</span>
+              </div>
+              <div class="position-value">
+                <i>y</i><span>=</span><output id="incline-position-y">0</output><span>m</span>
+              </div>
+            </div>
+          </div>
+          <label class="incline-property-row" for="incline-angle-input">
+            <span>Angle</span>
+            <span class="incline-property-control"><i>θ</i> = <span class="property-number-field"><input id="incline-angle-input" type="text" inputmode="decimal" value="30" /></span> °</span>
+          </label>
+          <label class="incline-property-row" for="incline-length-input">
+            <span>Horizontal length</span>
+            <span class="incline-property-control"><span class="property-number-field"><input id="incline-length-input" type="text" inputmode="decimal" value="10" aria-label="Incline horizontal length, minimum 10 metres" /></span> m</span>
+          </label>
+          <div class="incline-property-row">
+            <span>Direction</span>
+            <div class="direction-selector incline-direction-selector" role="group" aria-label="Incline direction">
+              <button id="incline-rises-left" type="button" aria-label="Incline rises left" aria-pressed="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M19 19 5 5m8 0H5v8" />
+                </svg>
+              </button>
+              <button id="incline-rises-right" type="button" aria-label="Incline rises right" aria-pressed="true">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M5 19 19 5m-8 0h8v8" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="ground-rough-row incline-rough-row">
+            <span>Rough</span>
+            <label id="incline-friction-control" class="ground-friction-control is-hidden" for="incline-friction-input">
+              <i class="physics-symbol">μ</i><span>=</span>
+              <span class="property-number-field"><input id="incline-friction-input" type="text" inputmode="decimal" value="0" /></span>
+            </label>
+            <label class="toggle-control" for="incline-rough-toggle">
+              <input id="incline-rough-toggle" type="checkbox" />
+              <span class="toggle-track" aria-hidden="true"><span></span></span>
+              <span class="visually-hidden">Rough incline enabled</span>
+            </label>
+          </div>
+        </aside>
+
+        <aside
+          id="connected-system-properties"
+          class="connected-system-properties is-hidden"
+          aria-labelledby="connected-system-title"
+        >
+          <h2 id="connected-system-title">Connected System</h2>
+          <div class="particle-properties-scroll connected-system-scroll">
+          <section class="connected-system-section">
+            <h3 class="connected-primary-heading">Particles</h3>
+            <div class="connected-value-row"><span>A</span><output id="connected-particle-a"></output></div>
+            <div class="connected-value-row"><span>B</span><output id="connected-particle-b"></output></div>
+          </section>
+          <section class="connected-system-section">
+            <h3 class="connected-primary-heading">String</h3>
+            <div class="connected-value-row"><span>Type</span><strong>Inextensible</strong></div>
+            <label class="connected-value-row connected-length-row" for="connected-length-input">
+              <span>Length</span>
+              <span class="connected-length-control"><span class="property-number-field"><input id="connected-length-input" type="text" inputmode="decimal" aria-describedby="connected-length-error" /></span><span>m</span></span>
+            </label>
+            <span id="connected-length-error" class="field-error connected-length-error" role="alert"></span>
+            <div class="connected-value-row"><span>State</span><output id="connected-string-state">Taut</output></div>
+          </section>
+          <section class="connected-system-section">
+            <h3 class="connected-primary-heading">System solution</h3>
+            <div id="connected-common-acceleration-row" class="connected-value-row connected-result-row">
+              <span>Acceleration</span>
+              <div class="position-value connected-result-value">
+                <i>a</i><span>=</span><output id="connected-acceleration"></output><span>m s<sup>&minus;2</sup></span>
+              </div>
+            </div>
+            <div class="connected-value-row connected-result-row">
+              <span>Tension</span>
+              <div class="position-value connected-result-value">
+                <i>T</i><span>=</span><output id="connected-tension"></output><span>N</span>
+              </div>
+            </div>
+            <p id="connected-slack-note" class="connected-slack-note" hidden>Particles move independently while the string is slack.</p>
+          </section>
+          <section id="connected-force-resolution-section" class="connected-system-section">
+            <h3>Force resolution</h3>
+            <div id="connected-force-resolution" class="connected-calculation"></div>
+          </section>
+          <section id="connected-fma-section" class="connected-system-section">
+            <h3>F = ma</h3>
+            <div id="connected-fma" class="connected-calculation"></div>
+          </section>
+          <p id="connected-boundary-message" class="connected-boundary-message" role="status" hidden></p>
           </div>
         </aside>
         </div>
@@ -545,17 +771,20 @@
             </span>
             <span>s</span>
           </div>
-          <button id="play-time" class="play-button" type="button" aria-label="Play">
-            <svg class="playback-icon" viewBox="0 0 28 28" aria-hidden="true">
-              <path
-                class="play-shape"
-                d="M10.8 5.5C9.8 4.9 9 5.5 9 6.7v14.6c0 1.2.8 1.8 1.8 1.2l11.3-7c1.6-1 1.6-2 0-3z"
-                transform="translate(-2 0)"
-              />
-              <path class="pause-outline-shape" d="M9 6v16M19 6v16" />
-              <path class="pause-shape" d="M9 6v16M19 6v16" />
-            </svg>
-          </button>
+          <div class="play-control">
+            <button id="play-time" class="play-button" type="button" aria-label="Play">
+              <svg class="playback-icon" viewBox="0 0 28 28" aria-hidden="true">
+                <path
+                  class="play-shape"
+                  d="M10.8 5.5C9.8 4.9 9 5.5 9 6.7v14.6c0 1.2.8 1.8 1.8 1.2l11.3-7c1.6-1 1.6-2 0-3z"
+                  transform="translate(-2 0)"
+                />
+                <path class="pause-outline-shape" d="M9 6v16M19 6v16" />
+                <path class="pause-shape" d="M9 6v16M19 6v16" />
+              </svg>
+            </button>
+            <div id="play-disabled-reason" class="play-disabled-reason" role="tooltip" hidden></div>
+          </div>
           <button id="next-time" class="time-button icon-only" type="button" aria-label="Step forward">
             <svg class="double-chevron-icon" viewBox="0 0 32 24" aria-hidden="true">
               <path d="M6 4l8 8-8 8M18 4l8 8-8 8" />
