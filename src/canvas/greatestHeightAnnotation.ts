@@ -26,6 +26,7 @@ export interface GreatestHeightMeasurement {
   height: number;
   valueDisplay: string | SquareRootValueDisplay;
   labelPrefix: string;
+  referencePosition?: { x: number; y: number };
 }
 
 export interface GreatestHeightHorizontalGeometry {
@@ -80,6 +81,20 @@ export function getGreatestHeightMeasurements(
     if (!triggeringIds.has(particleState.id)) return [];
     const particle = particlesById.get(particleState.id);
     if (!particle) return [];
+    const inclineDistance = event.inclineDistances?.[particleState.id];
+    if (inclineDistance) {
+      return [{
+        particleId: particleState.id,
+        position: { ...particleState.position },
+        referencePosition: { ...inclineDistance.referencePosition },
+        groundHeight: inclineDistance.referencePosition.y,
+        height: inclineDistance.distance,
+        valueDisplay: formatExactAnnotationValue(
+          exactNumericFallback(inclineDistance.distance),
+        ),
+        labelPrefix: "Greatest distance = ",
+      }];
+    }
 
     const referenceHeight = groundEnabled
       ? groundHeight
@@ -197,9 +212,8 @@ function exactNumericFallback(value: number): DisplayValue {
     : inferred;
 }
 
-function formatExactAnnotationValue(value: DisplayValue): string {
-  const formatted = formatWorkingValue(value);
-  return formatted.startsWith("≈") ? String(value.value) : formatted;
+export function formatExactAnnotationValue(value: DisplayValue): string {
+  return formatWorkingValue(value);
 }
 
 function approximatelyEqual(left: number, right: number): boolean {

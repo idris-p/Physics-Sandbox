@@ -13,6 +13,10 @@ import {
   validateStringConnection,
   type SharedStringSupport,
 } from "./stringConnection";
+import { analysePulleyConnectedSystem } from "./pulleySystem";
+
+export type ConnectedSystemSupport = SharedStringSupport |
+  { kind: "pulley"; pulleyId: string };
 
 export interface ConnectedEndpointAnalysis {
   particleId: string;
@@ -24,6 +28,10 @@ export interface ConnectedEndpointAnalysis {
   tensionVector: Vec2;
   resultant: Vec2;
   acceleration: Vec2;
+  scalarVelocity?: number;
+  scalarAcceleration?: number;
+  pathTangent?: Vec2;
+  stringLengthCoefficient?: -1 | 1;
 }
 
 export interface ConnectedSystemAnalysis {
@@ -31,7 +39,7 @@ export interface ConnectedSystemAnalysis {
   particleAId: string;
   particleBId: string;
   state: StringState;
-  support: SharedStringSupport;
+  support: ConnectedSystemSupport;
   scalarVelocity: number;
   commonAcceleration: number | null;
   tension: number;
@@ -43,6 +51,9 @@ export function analyseConnectedSystem(
   scene: Scene,
   string: InextensibleString,
 ): ConnectedSystemAnalysis | null {
+  if (string.route?.kind === "pulley") {
+    return analysePulleyConnectedSystem(scene, string);
+  }
   const validation = validateStringConnection(
     scene,
     string.particleAId,
@@ -177,7 +188,7 @@ function createEndpointInput(
   support: SharedStringSupport,
 ): EndpointInput {
   const nonContact = analyseNonContactForces(particle, scene.settings.gravity);
-  const normal = support.kind === "ground"
+  const normal = support.kind === "ground" || support.kind === "table"
     ? { x: 0, y: 1 }
     : getInclineGeometry(
         scene.inclines.find((incline) => incline.id === support.inclineId)!,
@@ -192,7 +203,9 @@ function createEndpointInput(
         rough: scene.groundRough,
         coefficient: scene.groundFriction,
       }
-    : getInclineRoughness(scene, support.inclineId);
+    : support.kind === "table"
+      ? getTableRoughness(scene, support.tableId)
+      : getInclineRoughness(scene, support.inclineId);
   return {
     particle,
     q,
@@ -207,6 +220,16 @@ function createEndpointInput(
       ? roughness.coefficient * normalReactionMagnitude
       : 0,
   };
+}
+
+function getTableRoughness(
+  scene: Scene,
+  tableId: string,
+): { rough: boolean; coefficient: number } {
+  const table = scene.tables.find((candidate) => candidate.id === tableId);
+  return table?.roughness.kind === "rough"
+    ? { rough: true, coefficient: table.roughness.coefficientOfFriction }
+    : { rough: false, coefficient: 0 };
 }
 
 function getInclineRoughness(

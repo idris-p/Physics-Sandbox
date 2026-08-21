@@ -114,9 +114,23 @@ export function formatAutoPauseTimeExactText(
 ): string {
   if (typeof display === "string") return display;
   if (display.kind === "square-root") {
-    return `${display.negative ? "−" : ""}√(${display.radicand})`;
+    return formatSimplifiedSquareRootExactText(
+      display.radicand,
+      display.negative,
+    );
   }
   if (display.kind === "rational-surd") {
+    const coefficient = rationalFromFraction(
+      `${display.numeratorCoefficient}/${display.denominator}`,
+    );
+    if (coefficient && /^\d+$/.test(display.radicand)) {
+      return formatWorkingValue(exactSurdValue(
+        Number(coefficient.numerator) / Number(coefficient.denominator) *
+          Math.sqrt(Number(display.radicand)),
+        coefficient,
+        BigInt(display.radicand),
+      ));
+    }
     return `${display.numeratorCoefficient}√(${display.radicand})/${display.denominator}`;
   }
   if (display.kind === "rational-trig") {
@@ -126,11 +140,67 @@ export function formatAutoPauseTimeExactText(
     return `${coefficient}${coefficient ? " " : ""}${display.functionName}(${display.angleText}°)`;
   }
 
-  const sign = display.radicalSign === "minus" ? "−" : "+";
-  const numerator = `${display.linearTerm} ${sign} √(${display.radicand})`;
-  return display.denominator === "1"
-    ? numerator
-    : `(${numerator})/${display.denominator}`;
+  return formatSimplifiedQuadraticSurdExactText(display) ?? (() => {
+    const sign = display.radicalSign === "minus" ? "−" : "+";
+    const numerator = `${display.linearTerm} ${sign} √(${display.radicand})`;
+    return display.denominator === "1"
+      ? numerator
+      : `(${numerator})/${display.denominator}`;
+  })();
+}
+
+function formatSimplifiedQuadraticSurdExactText(
+  display: QuadraticSurdTimeDisplay,
+): string | null {
+  const linearTerm = rationalFromFraction(display.linearTerm);
+  const radicand = rationalFromFraction(display.radicand);
+  const denominator = rationalFromFraction(display.denominator);
+  if (
+    !linearTerm || !radicand || radicand.numerator < 0n ||
+    !denominator || denominator.numerator === 0n
+  ) return null;
+  const linearValue = Number(linearTerm.numerator) / Number(linearTerm.denominator);
+  const rootMagnitude = Math.sqrt(
+    Number(radicand.numerator) / Number(radicand.denominator),
+  );
+  const subtractRoot = display.radicalSign === "minus";
+  const root = createRationalSquareRootDisplayValue(
+    subtractRoot ? -rootMagnitude : rootMagnitude,
+    radicand,
+    subtractRoot,
+  );
+  const numerator = addDisplayValues(
+    linearValue + root.value,
+    derivedValue(linearValue, linearTerm),
+    root,
+  );
+  return formatWorkingValue(divideDisplayValues(
+    numerator.value /
+      (Number(denominator.numerator) / Number(denominator.denominator)),
+    numerator,
+    derivedValue(
+      Number(denominator.numerator) / Number(denominator.denominator),
+      denominator,
+    ),
+  ));
+}
+
+function formatSimplifiedSquareRootExactText(
+  radicandText: string,
+  negative: boolean,
+): string {
+  const radicand = rationalFromFraction(radicandText);
+  if (!radicand || radicand.numerator < 0n) {
+    return `${negative ? "−" : ""}√(${radicandText})`;
+  }
+  const value = Math.sqrt(
+    Number(radicand.numerator) / Number(radicand.denominator),
+  );
+  return formatWorkingValue(createRationalSquareRootDisplayValue(
+    negative ? -value : value,
+    radicand,
+    negative,
+  ));
 }
 
 export function createAutoPauseTimeDisplayValue(
@@ -241,6 +311,46 @@ function createRationalSquareRootDisplayValue(
   );
 }
 
+function createSimplifiedSquareRootTimeDisplay(
+  radicand: Rational,
+  negative: boolean,
+): AutoPauseTimeDisplay {
+  const numericalValue = Math.sqrt(
+    Number(radicand.numerator) / Number(radicand.denominator),
+  );
+  const value = createRationalSquareRootDisplayValue(
+    negative ? -numericalValue : numericalValue,
+    radicand,
+    negative,
+  );
+  if (value.exact) {
+    return getFractionDisplay(value.exact) ?? formatExactRational(value.exact);
+  }
+  if (value.exactSurd) {
+    const coefficient = value.exactSurd.coefficient;
+    const unitCoefficient = coefficient.denominator === 1n &&
+      (coefficient.numerator === 1n || coefficient.numerator === -1n);
+    if (unitCoefficient) {
+      return {
+        kind: "square-root",
+        radicand: String(value.exactSurd.radicand),
+        negative: coefficient.numerator < 0n,
+      };
+    }
+    return {
+      kind: "rational-surd",
+      numeratorCoefficient: String(coefficient.numerator),
+      radicand: String(value.exactSurd.radicand),
+      denominator: String(coefficient.denominator),
+    };
+  }
+  return {
+    kind: "square-root",
+    radicand: formatExactRational(radicand),
+    negative,
+  };
+}
+
 export function getGroundContactPauseTimeDisplay(
   particle: Particle,
   gravityText: string | null,
@@ -291,11 +401,7 @@ export function getGroundContactPauseTimeDisplay(
 
   if (velocity.numerator === 0n) {
     const radicand = divideRationals(discriminant, squareRational(gravity));
-    return {
-      kind: "square-root",
-      radicand: formatExactRational(radicand),
-      negative: false,
-    };
+    return createSimplifiedSquareRootTimeDisplay(radicand, false);
   }
 
   return {
@@ -416,13 +522,10 @@ export function getVerticalTargetPauseTimeDisplay(
     : "plus";
 
   if (velocity.numerator === 0n && radicalSign === "plus") {
-    return {
-      kind: "square-root",
-      radicand: formatExactRational(
-        divideRationals(discriminant, squareRational(gravity)),
-      ),
-      negative: false,
-    };
+    return createSimplifiedSquareRootTimeDisplay(
+      divideRationals(discriminant, squareRational(gravity)),
+      false,
+    );
   }
 
   return {

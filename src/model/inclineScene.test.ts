@@ -3,8 +3,32 @@ import { createParticle } from "./Particle";
 import { createIncline, setInclineRoughness } from "./Incline";
 import { createScene } from "./Scene";
 import { addDefaultIncline, removeIncline } from "./inclineScene";
+import { addPulleyApparatus } from "./pulleyScene";
+import { getInclineGeometry } from "../geometry/inclineGeometry";
 
 describe("incline scene operations", () => {
+  it("removes an Incline-mounted Pulley route without leaving stale IDs", () => {
+    const scene = createScene();
+    const incline = addDefaultIncline(scene, "mounted", { x: 0, y: 0 });
+    const apparatus = addPulleyApparatus(
+      scene,
+      {
+        pulleyId: "pulley",
+        stringId: "pulley-string",
+        particleAId: "incline-endpoint",
+        particleBId: "hanging-endpoint",
+      },
+      getInclineGeometry(incline).upperEndpoint,
+      { kind: "incline-end", inclineId: incline.id },
+    )!;
+    expect(removeIncline(scene, incline.id)).toBe(true);
+    expect(scene.pulleys).toEqual([]);
+    expect(scene.strings).toEqual([]);
+    expect(scene.particles.map((particle) => particle.id)).toEqual([
+      apparatus.particleB.id,
+    ]);
+  });
+
   it("provides an active default coefficient when an incline becomes rough", () => {
     const incline = createIncline("rough", { x: 0, y: 0 });
     setInclineRoughness(incline, true);

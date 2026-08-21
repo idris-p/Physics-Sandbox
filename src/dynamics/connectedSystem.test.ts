@@ -4,6 +4,7 @@ import { createAppliedForce } from "../model/AppliedForce";
 import { createIncline } from "../model/Incline";
 import { createParticle, type Particle } from "../model/Particle";
 import { createScene, type Scene } from "../model/Scene";
+import { createTable } from "../model/Table";
 import { connectParticlesWithString } from "./stringConnection";
 import { analyseConnectedSystem } from "./connectedSystem";
 
@@ -78,6 +79,30 @@ describe("connected system dynamics", () => {
       a.mass * scene.settings.gravity * Math.cos(Math.PI / 6),
       12,
     );
+  });
+
+  it("uses Table support and its roughness for a connected system", () => {
+    const scene = createScene();
+    const table = createTable("table", { x: 0, y: 5 }, 10, 5);
+    table.roughness = {
+      kind: "rough",
+      coefficientOfFriction: 0.5,
+      coefficientInput: "0.5",
+    };
+    const a = createParticle("a", { x: 2, y: 5 });
+    const b = createParticle("b", { x: 6, y: 5 });
+    a.initialTableContact = { tableId: table.id, q: 2 };
+    b.initialTableContact = { tableId: table.id, q: 6 };
+    scene.tables.push(table);
+    scene.particles.push(a, b);
+
+    const analysis = analyseConnectedSystem(scene, connect(scene, a, b))!;
+
+    expect(analysis.support).toMatchObject({ kind: "table", tableId: table.id });
+    expect(analysis.state).toBe("taut");
+    expect(analysis.commonAcceleration).toBe(0);
+    expect(analysis.endpointA.normalReactionMagnitude).toBeCloseTo(9.8, 12);
+    expect(analysis.endpointA.friction.limitingMagnitude).toBeCloseTo(4.9, 12);
   });
 });
 

@@ -18,6 +18,7 @@ export function calculateSceneState(scene: Scene, time: number): ParticleState[]
       groundRough: scene.groundRough,
       groundFriction: scene.groundFriction,
       inclines: scene.inclines,
+      tables: scene.tables,
     }),
   );
 }

@@ -8,6 +8,7 @@ import type { AppliedForce, AppliedForceInputMode } from "./AppliedForce";
 
 export type InitialVelocityInputMode = "angle" | "components";
 export type ParticleShape = "circle" | "square";
+export const PARTICLE_DIAMETER_METRES = 1;
 
 export interface EnteredAngleVelocity extends AngleConvention {
   speedText: string;
@@ -49,6 +50,11 @@ export interface Particle {
   initialVelocityAngleInput?: EnteredAngleVelocity;
   initialInclineContact?: {
     inclineId: string;
+    q: number;
+  };
+  initialTableContact?: {
+    tableId: string;
+    /** Distance from the Table's left top endpoint, in metres. */
     q: number;
   };
 }

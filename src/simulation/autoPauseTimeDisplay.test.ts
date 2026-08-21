@@ -6,6 +6,7 @@ import {
   getGroundContactPauseTimeDisplay,
   getVerticalTargetPauseTimeDisplay,
   createAutoPauseTimeDisplayValue,
+  formatAutoPauseTimeExactText,
 } from "./autoPauseTimeDisplay";
 import { formatWorkingValue } from "../kinematics/exactDisplay";
 
@@ -100,6 +101,19 @@ describe("exact auto-pause time display", () => {
       radicand: "2",
       negative: false,
     });
+  });
+
+  it("uses the same exact surd calculation for a Table surface height", () => {
+    const particle = createParticle("p", { x: 0, y: 10 });
+
+    const display = getGroundContactPauseTimeDisplay(particle, "9.8", 5);
+    expect(display).toEqual({
+      kind: "rational-surd",
+      numeratorCoefficient: "5",
+      radicand: "2",
+      denominator: "7",
+    });
+    expect(formatAutoPauseTimeExactText(display!)).toBe("5√(2)/7");
   });
 
   it("simplifies a rational impact time before displaying it", () => {
@@ -229,6 +243,6 @@ describe("exact auto-pause time display", () => {
       radicalSign: "plus",
     });
     expect(formatWorkingValue(createAutoPauseTimeDisplayValue(eventTime, display!)))
-      .toBe("(10 + √(168.6))/9.8");
+      .toBe("(50 + √(4215))/49");
   });
 });

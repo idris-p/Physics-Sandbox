@@ -10,9 +10,11 @@ import {
 import { attachCanvasInteraction, type Tool } from "./canvas/interaction";
 import type { PlacementPreview } from "./canvas/placementPreview";
 import { getGreatestHeightMeasurements } from "./canvas/greatestHeightAnnotation";
+import { getGroundContactRangeMeasurements } from "./canvas/rangeAnnotation";
 import { getVerticalTargetMeasurements } from "./canvas/verticalTargetAnnotation";
 import {
   findCanvasExactValueHoverTarget,
+  getParticleForceContactDisplay,
   render,
   type CanvasExactValueHoverTarget,
   type CanvasTooltipExclusion,
@@ -58,10 +60,8 @@ import {
 } from "./dynamics/forceAnalysis";
 import {
   createInclineForceResolutionDisplay,
-  createInclineNormalReactionDisplay,
 } from "./dynamics/inclineForceDisplay";
 import { createParticleForceDisplay } from "./dynamics/forceDisplay";
-import { createFrictionDisplay } from "./dynamics/frictionDisplay";
 import { createAppliedForceEditorConversion } from "./dynamics/appliedForceEditorConversion";
 import {
   editAppliedForceComponents,
@@ -70,7 +70,7 @@ import {
   setAppliedForcesInputMode,
 } from "./dynamics/editAppliedForce";
 import { createAppliedForce, type AppliedForce } from "./model/AppliedForce";
-import { createParticle } from "./model/Particle";
+import { createParticle, type Particle } from "./model/Particle";
 import type { Vec2 } from "./math/Vec2";
 import {
   createIncline,
@@ -79,16 +79,42 @@ import {
 } from "./model/Incline";
 import { addDefaultIncline, removeIncline } from "./model/inclineScene";
 import {
-  canPlaceIncline,
   getInclineGeometry,
   pointAtInclineCoordinate,
 } from "./geometry/inclineGeometry";
 import {
+  canPlaceInclineInScene,
   placeParticlesOnInclineSurface,
   snapParticleToIncline as snapParticleOntoIncline,
 } from "./simulation/inclineSetup";
+import {
+  canPlaceTable,
+  placeParticlesOnTableSurface,
+  snapParticleToTable,
+} from "./simulation/tableSetup";
+import {
+  isPulleyPlacementValid,
+  validatePulleyString,
+} from "./dynamics/pulleyEndpointPath";
+import { dot } from "./geometry/inclineGeometry";
+import { analyseTableContactForces } from "./dynamics/tableContact";
 import type { ParticleState } from "./model/Particle";
 import { createScene } from "./model/Scene";
+import { addDefaultTable } from "./model/tableScene";
+import { removeTable } from "./model/tableScene";
+import {
+  createTable,
+  MINIMUM_TABLE_SIZE,
+  setTableRoughness,
+  type Table,
+} from "./model/Table";
+import { pointAtTableCoordinate } from "./geometry/tableGeometry";
+import {
+  addPulleyApparatus,
+  movePulleyApparatus,
+  removePulley,
+  rebuildMountedPulleyApparatus,
+} from "./model/pulleyScene";
 import { calculateSceneState } from "./physics/calculateSceneState";
 import {
   calculateConnectedSystemTrajectory,
@@ -99,12 +125,15 @@ import { analyseConnectedSystem } from "./dynamics/connectedSystem";
 import { createConnectedSystemDisplay } from "./dynamics/connectedSystemDisplay";
 import {
   connectParticlesWithString,
+  getPulleyStringLegLengths,
   resizeStringToCurrentSeparation,
   getStringEndpointCoordinates,
   removeString,
   removeStringsForParticle,
   setStringLength,
+  setPulleyStringLegLength,
   validateStringConnection,
+  getInvalidStringIds,
 } from "./dynamics/stringConnection";
 import {
   calculateGroundImpactTimeWithAcceleration,
@@ -128,7 +157,6 @@ import { createPhaseIntervalNote } from "./simulation/phaseIntervalNote";
 import {
   advancePlayback,
   earliestPauseTime,
-  getNextGroundContactPauseEvent,
   getNextGreatestHeightPauseEvent,
   getNextIntegerSecond,
   getNextParticleCoincidencePauseEvent,
@@ -139,6 +167,13 @@ import {
   type GroundContactPauseEvent,
   type VerticalTargetPauseEvent,
 } from "./simulation/playback";
+import {
+  createScenePauseEventContext,
+  getNextPulleyGreatestHeightPauseEvent,
+  getNextPulleyParticleCoincidencePauseEvent,
+  getNextPulleyVerticalTargetPauseEvent,
+  getNextSceneContactPauseEvent,
+} from "./simulation/scenePauseEvents";
 import {
   createControls,
   formatPlaybackTime,
@@ -156,6 +191,7 @@ let selectedParticleId: string | null = null;
 let groundSelected = false;
 let selectedInclineId: string | null = null;
 let selectedStringId: string | null = null;
+let selectedTableId: string | null = null;
 let stringConnectionSourceId: string | null = null;
 let stringConnectionPointer: Vec2 | null = null;
 let stringConnectionMessage: string | null = null;
@@ -167,12 +203,15 @@ let isPlaying = false;
 let pendingPauseTime: number | null = null;
 let previousFrameTimestamp: number | null = null;
 let greatestHeightPauseEvent: GreatestHeightPauseEvent | null = null;
+let groundContactPauseEvent: GroundContactPauseEvent | null = null;
 let verticalTargetPauseEvent: VerticalTargetPauseEvent | null = null;
 let autoPauseTimeDisplay: AutoPauseTimeDisplay | null = null;
 let nextParticleId = 1;
 let nextAppliedForceId = 1;
 let nextInclineId = 1;
 let nextStringId = 1;
+let nextTableId = 1;
+let nextPulleyId = 1;
 let canvasExactValueHoverTargets: CanvasExactValueHoverTarget[] = [];
 let canvasTooltipExclusions: CanvasTooltipExclusion[] = [];
 let motionGraphPlanLock: { particleId: string; plan: MotionGraphPlan } | null = null;
@@ -193,11 +232,36 @@ const controls = createControls({
     resetTime();
     return true;
   },
+  onPulleyStringLegLengthChange: (leg, length, enteredText) => {
+    if (!selectedStringId) return false;
+    const result = setPulleyStringLegLength(
+      scene,
+      selectedStringId,
+      leg,
+      length,
+      enteredText,
+    );
+    if (!result.ok) {
+      stringConnectionMessage = result.message;
+      return false;
+    }
+    stringConnectionMessage = null;
+    resetTime();
+    return true;
+  },
   onGroundChange: (enabled) => {
     scene.groundEnabled = enabled;
     if (!enabled) groundSelected = false;
 
     if (enabled) {
+      for (const table of scene.tables) {
+        if (table.topLeft.y - table.height < scene.groundHeight) {
+          moveTableTo(table, {
+            x: table.topLeft.x,
+            y: scene.groundHeight + table.height,
+          });
+        }
+      }
       for (const particle of scene.particles) {
         if (particle.initialPosition.y < scene.groundHeight) {
           particle.initialPosition.y = scene.groundHeight;
@@ -318,6 +382,7 @@ const controls = createControls({
     );
     replaceParticlePreservingStrings(particleIndex, candidate);
     greatestHeightPauseEvent = null;
+    groundContactPauseEvent = null;
     verticalTargetPauseEvent = null;
     autoPauseTimeDisplay = null;
     updateUi();
@@ -337,6 +402,7 @@ const controls = createControls({
     );
     replaceParticlePreservingStrings(particleIndex, candidate);
     greatestHeightPauseEvent = null;
+    groundContactPauseEvent = null;
     verticalTargetPauseEvent = null;
     autoPauseTimeDisplay = null;
     updateUi();
@@ -351,6 +417,7 @@ const controls = createControls({
       mode,
     );
     greatestHeightPauseEvent = null;
+    groundContactPauseEvent = null;
     verticalTargetPauseEvent = null;
     autoPauseTimeDisplay = null;
     updateUi();
@@ -363,6 +430,7 @@ const controls = createControls({
 
     particle.pauseAtGreatestHeight = enabled;
     greatestHeightPauseEvent = null;
+    groundContactPauseEvent = null;
     verticalTargetPauseEvent = null;
     autoPauseTimeDisplay = null;
     updateUi();
@@ -374,6 +442,7 @@ const controls = createControls({
     if (!particle) return;
 
     particle.pauseAtGroundContact = enabled;
+    groundContactPauseEvent = null;
     autoPauseTimeDisplay = null;
     updateUi();
   },
@@ -465,7 +534,7 @@ const controls = createControls({
       angleDegrees: angle,
       angleInput: enteredText,
     };
-    if (!canPlaceIncline(candidate, scene.inclines)) {
+    if (!canPlaceInclineInScene(candidate, scene)) {
       updateUi();
       return;
     }
@@ -477,7 +546,7 @@ const controls = createControls({
     const incline = getSelectedIncline();
     if (!incline || incline.direction === direction) return;
     const candidate = { ...incline, direction };
-    if (!canPlaceIncline(candidate, scene.inclines)) {
+    if (!canPlaceInclineInScene(candidate, scene)) {
       updateUi();
       return;
     }
@@ -497,10 +566,42 @@ const controls = createControls({
     incline.roughness.coefficientInput = enteredText;
     resetTime();
   },
+  onTableWidthChange: (width, enteredText) => {
+    const table = getSelectedTable();
+    if (!table || width < MINIMUM_TABLE_SIZE) return;
+    resizeTable(table, width, enteredText);
+  },
+  onTableHeightChange: (height, enteredText) => {
+    const table = getSelectedTable();
+    if (!table || height < MINIMUM_TABLE_SIZE) return;
+    table.height = height;
+    table.heightInput = enteredText;
+    if (scene.groundEnabled && table.topLeft.y - height < scene.groundHeight) {
+      moveTableTo(table, {
+        x: table.topLeft.x,
+        y: scene.groundHeight + height,
+      });
+    }
+    resetTime();
+  },
+  onTableRoughChange: (rough) => {
+    const table = getSelectedTable();
+    if (!table) return;
+    setTableRoughness(table, rough);
+    resetTime();
+  },
+  onTableFrictionChange: (coefficient, enteredText) => {
+    const table = getSelectedTable();
+    if (!table || table.roughness.kind !== "rough") return;
+    table.roughness.coefficientOfFriction = coefficient;
+    table.roughness.coefficientInput = enteredText;
+    resetTime();
+  },
   onClearScene: clearScene,
   onTimeChange: (time, enteredText) => {
     setPlaying(false);
     greatestHeightPauseEvent = null;
+    groundContactPauseEvent = null;
     verticalTargetPauseEvent = null;
     autoPauseTimeDisplay = null;
     currentTime = clampToConnectedBoundary(time);
@@ -533,6 +634,66 @@ function getSelectedParticle() {
 
 function getSelectedIncline(): Incline | undefined {
   return scene.inclines.find((incline) => incline.id === selectedInclineId);
+}
+
+function getSelectedTable(): Table | undefined {
+  return scene.tables.find((table) => table.id === selectedTableId);
+}
+
+function moveTableTo(table: Table, topLeft: Vec2): void {
+  table.topLeft = { ...topLeft };
+  for (const particle of scene.particles) {
+    if (particle.initialTableContact?.tableId !== table.id) continue;
+    particle.initialPosition = pointAtTableCoordinate(
+      table,
+      particle.initialTableContact.q,
+    );
+  }
+  for (const pulley of scene.pulleys) {
+    if (
+      pulley.mount.kind === "table-corner" &&
+      pulley.mount.tableId === table.id
+    ) {
+      rebuildMountedPulleyApparatus(scene, pulley.id);
+      resizeStringToCurrentSeparation(scene, pulley.stringId);
+    }
+  }
+  placeParticlesOnTableSurface(scene.particles, table);
+}
+
+function resizeTable(table: Table, width: number, enteredText: string): void {
+  const previousWidth = table.width;
+  table.width = width;
+  table.widthInput = enteredText;
+  for (const particle of scene.particles) {
+    if (particle.initialTableContact?.tableId !== table.id) continue;
+    const rightMountedPulley = scene.pulleys.find((pulley) =>
+      pulley.mount.kind === "table-corner" &&
+      pulley.mount.tableId === table.id &&
+      pulley.mount.side === "right" &&
+      scene.strings.some((string) =>
+        string.id === pulley.stringId && string.particleAId === particle.id
+      )
+    );
+    const q = rightMountedPulley
+      ? width - (previousWidth - particle.initialTableContact.q)
+      : particle.initialTableContact.q;
+    particle.initialTableContact.q = Math.max(0, Math.min(width, q));
+    particle.initialPosition = pointAtTableCoordinate(
+      table,
+      particle.initialTableContact.q,
+    );
+  }
+  for (const pulley of scene.pulleys) {
+    if (
+      pulley.mount.kind === "table-corner" &&
+      pulley.mount.tableId === table.id
+    ) {
+      rebuildMountedPulleyApparatus(scene, pulley.id);
+      resizeStringToCurrentSeparation(scene, pulley.stringId);
+    }
+  }
+  resetTime();
 }
 
 function beginStringConnection(): void {
@@ -601,6 +762,21 @@ function getEarliestConnectedBoundaryEvent(): ConnectedBoundaryEvent | null {
     .sort((left, right) => left.time - right.time)[0] ?? null;
 }
 
+function mergeParticlePauseEvents<
+  T extends { time: number; particleIds: string[] },
+>(first: T | null, second: T | null): T | null {
+  if (!first) return second;
+  if (!second) return first;
+  if (!sameTime(first.time, second.time)) {
+    return first.time < second.time ? first : second;
+  }
+  return {
+    ...first,
+    ...second,
+    particleIds: [...new Set([...first.particleIds, ...second.particleIds])],
+  };
+}
+
 function clampToConnectedBoundary(requestedTime: number): number {
   const boundary = getEarliestConnectedBoundaryEvent();
   if (boundary && requestedTime >= boundary.time - 1e-10) {
@@ -624,7 +800,7 @@ function resizeIncline(
     horizontalLength,
     horizontalLengthInput: enteredText,
   };
-  if (!canPlaceIncline(candidate, scene.inclines)) {
+  if (!canPlaceInclineInScene(candidate, scene)) {
     updateUi();
     return;
   }
@@ -647,25 +823,78 @@ function reconstructInclineSetup(incline: Incline): void {
     );
   }
   placeParticlesOnInclineSurface(scene.particles, incline);
+  for (const pulley of scene.pulleys) {
+    if (
+      pulley.mount.kind === "incline-end" &&
+      pulley.mount.inclineId === incline.id
+    ) {
+      rebuildMountedPulleyApparatus(scene, pulley.id);
+      resizeStringToCurrentSeparation(scene, pulley.stringId);
+    }
+  }
   resetTime();
 }
 
 const INCLINE_SNAP_DISTANCE_METRES = 0.5;
 
-function snapParticleToIncline(
+function snapParticleToSurface(
   particle: (typeof scene.particles)[number],
   position: { x: number; y: number },
 ): void {
-  snapParticleOntoIncline(
+  const inclineSnap = snapParticleOntoIncline(
     particle,
     position,
     scene.inclines,
     INCLINE_SNAP_DISTANCE_METRES,
   );
+  if (inclineSnap) {
+    particle.initialTableContact = undefined;
+    return;
+  }
+  snapParticleToTable(
+    particle,
+    position,
+    scene.tables,
+    INCLINE_SNAP_DISTANCE_METRES,
+  );
+}
+
+interface ParticlePlacementSnapshot {
+  initialPosition: Vec2;
+  initialInclineContact?: Particle["initialInclineContact"];
+  initialTableContact?: Particle["initialTableContact"];
+}
+
+function snapshotParticlePlacement(
+  particle: Particle,
+): ParticlePlacementSnapshot {
+  return {
+    initialPosition: { ...particle.initialPosition },
+    initialInclineContact: particle.initialInclineContact
+      ? { ...particle.initialInclineContact }
+      : undefined,
+    initialTableContact: particle.initialTableContact
+      ? { ...particle.initialTableContact }
+      : undefined,
+  };
+}
+
+function restoreParticlePlacement(
+  particle: Particle,
+  snapshot: ParticlePlacementSnapshot,
+): void {
+  particle.initialPosition = { ...snapshot.initialPosition };
+  particle.initialInclineContact = snapshot.initialInclineContact
+    ? { ...snapshot.initialInclineContact }
+    : undefined;
+  particle.initialTableContact = snapshot.initialTableContact
+    ? { ...snapshot.initialTableContact }
+    : undefined;
 }
 
 function invalidateParticleAnalysisEvents(): void {
   greatestHeightPauseEvent = null;
+  groundContactPauseEvent = null;
   verticalTargetPauseEvent = null;
   autoPauseTimeDisplay = null;
   motionGraphPlanLock = null;
@@ -709,14 +938,7 @@ function replaceParticlePreservingStrings(
 }
 
 function areAllStringsValid(): boolean {
-  return scene.strings.every((string) =>
-    validateStringConnection(
-      scene,
-      string.particleAId,
-      string.particleBId,
-      string.id,
-    ).valid
-  );
+  return getInvalidStringIds(scene).length === 0;
 }
 
 function isParticleMoveValid(
@@ -730,17 +952,21 @@ function isParticleMoveValid(
   const previousContact = particle.initialInclineContact
     ? { ...particle.initialInclineContact }
     : undefined;
+  const previousTableContact = particle.initialTableContact
+    ? { ...particle.initialTableContact }
+    : undefined;
   const previousStringLengths = scene.strings.map((string) => ({
     string,
     length: string.length,
     lengthInput: string.lengthInput,
   }));
   particle.initialPosition = { ...position };
-  snapParticleToIncline(particle, position);
+  snapParticleToSurface(particle, position);
   resizeStringsForParticle(particleId);
   const valid = areAllStringsValid();
   particle.initialPosition = previousPosition;
   particle.initialInclineContact = previousContact;
+  particle.initialTableContact = previousTableContact;
   for (const snapshot of previousStringLengths) {
     snapshot.string.length = snapshot.length;
     snapshot.string.lengthInput = snapshot.lengthInput;
@@ -764,15 +990,32 @@ const STRING_LIMIT_SNAP_DISTANCE_METRES = 0.25;
 function resolveParticleMove(
   particleId: string,
   pointerPosition: Vec2,
-  defaultPosition: Vec2,
+  _defaultPosition: Vec2,
 ): Vec2 {
   const string = scene.strings.find(
     (candidate) => candidate.particleAId === particleId ||
       candidate.particleBId === particleId,
   );
-  if (!string) return defaultPosition;
+  if (!string) return pointerPosition;
+  if (string.route?.kind === "pulley") {
+    const validation = validatePulleyString(scene, string);
+    if (!validation.valid) return pointerPosition;
+    const path = string.particleAId === particleId
+      ? validation.endpointA
+      : validation.endpointB;
+    const currentPosition = path.positionAt(path.q);
+    const projectedQ = path.q + dot(
+      {
+        x: pointerPosition.x - currentPosition.x,
+        y: pointerPosition.y - currentPosition.y,
+      },
+      path.tangent,
+    );
+    const q = Math.max(path.minimumQ, Math.min(path.maximumQ, projectedQ));
+    return path.positionAt(q);
+  }
   const endpoints = getStringEndpointCoordinates(scene, string);
-  if (!endpoints) return defaultPosition;
+  if (!endpoints) return pointerPosition;
 
   const otherQ = string.particleAId === particleId
     ? endpoints.qB
@@ -782,6 +1025,18 @@ function resolveParticleMove(
     .flatMap((q): Vec2[] => {
       if (support.kind === "ground") {
         return [{ x: q, y: scene.groundHeight }];
+      }
+      if (support.kind === "table") {
+        if (q < -1e-9 || q > support.width + 1e-9) return [];
+        const table = scene.tables.find(
+          (candidate) => candidate.id === support.tableId,
+        );
+        return table
+          ? [pointAtTableCoordinate(
+              table,
+              Math.max(0, Math.min(q, support.width)),
+            )]
+          : [];
       }
       if (q < -1e-9 || q > support.slopeLength + 1e-9) return [];
       const incline = scene.inclines.find(
@@ -813,7 +1068,7 @@ function resolveParticleMove(
   ) {
     return nearestLimit;
   }
-  return defaultPosition;
+  return pointerPosition;
 }
 
 const canvasExactTooltipElement = document.getElementById("canvas-exact-tooltip");
@@ -906,6 +1161,8 @@ attachCanvasInteraction({
   deleteTarget: controls.deleteTarget,
   particleSource: controls.particleSource,
   inclineSource: controls.inclineSource,
+  tableSource: controls.tableSource,
+  pulleySource: controls.pulleySource,
   getCamera: () => camera,
   getTool: () => activeTool,
   getCurrentTime: () => currentTime,
@@ -913,6 +1170,7 @@ attachCanvasInteraction({
   getScene: () => scene,
   getInclines: () => scene.inclines,
   getSelectedInclineId: () => selectedInclineId,
+  getSelectedTableId: () => selectedTableId,
   isGroundEnabled: () => scene.groundEnabled,
   getGroundHeight: () => scene.groundHeight,
   onSelect: (particleId) => {
@@ -921,6 +1179,7 @@ attachCanvasInteraction({
     stringConnectionMessage = null;
     groundSelected = false;
     selectedInclineId = null;
+    selectedTableId = null;
     updateUi();
   },
   onSelectGround: () => {
@@ -928,6 +1187,7 @@ attachCanvasInteraction({
     groundSelected = true;
     selectedInclineId = null;
     selectedStringId = null;
+    selectedTableId = null;
     updateUi();
   },
   onSelectIncline: (inclineId) => {
@@ -935,6 +1195,7 @@ attachCanvasInteraction({
     groundSelected = false;
     selectedInclineId = inclineId;
     selectedStringId = null;
+    selectedTableId = null;
     updateUi();
   },
   onSelectString: (stringId) => {
@@ -942,7 +1203,16 @@ attachCanvasInteraction({
     groundSelected = false;
     selectedInclineId = null;
     selectedStringId = stringId;
+    selectedTableId = null;
     cancelStringConnection(false);
+    updateUi();
+  },
+  onSelectTable: (tableId) => {
+    selectedParticleId = null;
+    groundSelected = false;
+    selectedInclineId = null;
+    selectedStringId = null;
+    selectedTableId = tableId;
     updateUi();
   },
   getStringConnectionSourceId: () => stringConnectionSourceId,
@@ -958,18 +1228,19 @@ attachCanvasInteraction({
     );
     nextParticleId += 1;
     scene.particles.push(particle);
-    snapParticleToIncline(particle, position);
+    snapParticleToSurface(particle, position);
     selectedParticleId = particle.id;
     groundSelected = false;
     selectedInclineId = null;
     selectedStringId = null;
+    selectedTableId = null;
     resetTime();
     updateUi();
   },
   onPlaceIncline: (position) => {
     const inclineId = `incline-${nextInclineId}`;
     const candidate = createIncline(inclineId, position);
-    if (!canPlaceIncline(candidate, scene.inclines)) return;
+    if (!canPlaceInclineInScene(candidate, scene)) return;
     const incline = addDefaultIncline(
       scene,
       inclineId,
@@ -981,8 +1252,64 @@ attachCanvasInteraction({
     groundSelected = false;
     selectedInclineId = incline.id;
     selectedStringId = null;
+    selectedTableId = null;
     resetTime();
     updateUi();
+  },
+  onPlaceTable: (position) => {
+    const tableId = `table-${nextTableId}`;
+    if (!canPlaceTable(createTable(tableId, position), scene)) return;
+    const table = addDefaultTable(scene, tableId, position);
+    placeParticlesOnTableSurface(scene.particles, table);
+    nextTableId += 1;
+    selectedParticleId = null;
+    groundSelected = false;
+    selectedInclineId = null;
+    selectedStringId = null;
+    selectedTableId = table.id;
+    resetTime();
+  },
+  onPlacePulley: (position, mount) => {
+    const particleAId = `particle-${nextParticleId}`;
+    const particleBId = `particle-${nextParticleId + 1}`;
+    const apparatus = addPulleyApparatus(
+      scene,
+      {
+        pulleyId: `pulley-${nextPulleyId}`,
+        stringId: `string-${nextStringId}`,
+        particleAId,
+        particleBId,
+      },
+      position,
+      mount,
+    );
+    if (!apparatus) return;
+    const string = scene.strings.find(
+      (candidate) => candidate.id === apparatus.stringId,
+    );
+    const validation = string ? validatePulleyString(scene, string) : null;
+    if (!validation?.valid) {
+      removePulley(scene, apparatus.pulley.id);
+      const generatedIds = new Set(apparatus.pulley.generatedParticleIds);
+      scene.particles = scene.particles.filter(
+        (particle) => !generatedIds.has(particle.id),
+      );
+      stringConnectionMessage = validation?.message ??
+        "That Pulley apparatus cannot be placed there.";
+      updateUi();
+      return;
+    }
+    apparatus.particleA.name = `Particle ${nextParticleId}`;
+    apparatus.particleB.name = `Particle ${nextParticleId + 1}`;
+    nextParticleId += 2;
+    nextStringId += 1;
+    nextPulleyId += 1;
+    selectedParticleId = null;
+    groundSelected = false;
+    selectedInclineId = null;
+    selectedStringId = apparatus.stringId;
+    selectedTableId = null;
+    resetTime();
   },
   resolveParticleMove,
   isParticleMoveValid,
@@ -1000,30 +1327,27 @@ attachCanvasInteraction({
     const previousContact = particle.initialInclineContact
       ? { ...particle.initialInclineContact }
       : undefined;
+    const previousTableContact = particle.initialTableContact
+      ? { ...particle.initialTableContact }
+      : undefined;
     const previousStringLengths = scene.strings.map((string) => ({
       string,
       length: string.length,
       lengthInput: string.lengthInput,
     }));
     particle.initialPosition = { ...position };
-    snapParticleToIncline(particle, position);
+    snapParticleToSurface(particle, position);
     resizeStringsForParticle(particleId);
-    const invalidString = scene.strings.find((string) =>
-      !validateStringConnection(
-        scene,
-        string.particleAId,
-        string.particleBId,
-        string.id,
-      ).valid
-    );
+    const invalidString = getInvalidStringIds(scene)[0];
     if (invalidString) {
       particle.initialPosition = previousPosition;
       particle.initialInclineContact = previousContact;
+      particle.initialTableContact = previousTableContact;
       for (const snapshot of previousStringLengths) {
         snapshot.string.length = snapshot.length;
         snapshot.string.lengthInput = snapshot.lengthInput;
       }
-      stringConnectionMessage = "That move would invalidate the direct string.";
+      stringConnectionMessage = "That move would invalidate the connected system.";
       updateUi();
       return previousPosition;
     }
@@ -1031,6 +1355,7 @@ attachCanvasInteraction({
     groundSelected = false;
     selectedInclineId = null;
     selectedStringId = null;
+    selectedTableId = null;
     resetTime();
     updateUi();
     return { ...particle.initialPosition };
@@ -1041,7 +1366,7 @@ attachCanvasInteraction({
     );
     if (!incline) return;
     const candidate = { ...incline, anchor: { ...lowerEndpoint } };
-    if (!canPlaceIncline(candidate, scene.inclines)) return;
+    if (!canPlaceInclineInScene(candidate, scene)) return;
     if (
       incline.anchor.x === lowerEndpoint.x &&
       incline.anchor.y === lowerEndpoint.y
@@ -1054,18 +1379,90 @@ attachCanvasInteraction({
     selectedInclineId = incline.id;
     reconstructInclineSetup(incline);
   },
+  onMoveTable: (tableId, topLeft) => {
+    const table = scene.tables.find((candidate) => candidate.id === tableId);
+    if (!table) return;
+    if (!canPlaceTable(
+      { ...table, topLeft: { ...topLeft } },
+      scene,
+      table.id,
+    )) return;
+    moveTableTo(table, topLeft);
+    selectedParticleId = null;
+    selectedInclineId = null;
+    selectedStringId = null;
+    selectedTableId = table.id;
+    groundSelected = false;
+    resetTime();
+  },
+  onMovePulley: (pulleyId, position, mount) => {
+    const pulley = scene.pulleys.find((candidate) => candidate.id === pulleyId);
+    const string = pulley
+      ? scene.strings.find((candidate) => candidate.id === pulley.stringId)
+      : undefined;
+    const particleA = string
+      ? scene.particles.find((candidate) => candidate.id === string.particleAId)
+      : undefined;
+    const particleB = string
+      ? scene.particles.find((candidate) => candidate.id === string.particleBId)
+      : undefined;
+    if (!pulley || !string || !particleA || !particleB) return;
+
+    const snapshot = {
+      centre: { ...pulley.centre },
+      mount: pulley.mount,
+      length: string.length,
+      lengthInput: string.lengthInput,
+      particleA: snapshotParticlePlacement(particleA),
+      particleB: snapshotParticlePlacement(particleB),
+    };
+    const moved = movePulleyApparatus(scene, pulley.id, position, mount);
+    const validation = moved ? validatePulleyString(scene, string) : null;
+    if (!validation?.valid) {
+      pulley.centre = snapshot.centre;
+      pulley.mount = snapshot.mount;
+      string.length = snapshot.length;
+      string.lengthInput = snapshot.lengthInput;
+      restoreParticlePlacement(particleA, snapshot.particleA);
+      restoreParticlePlacement(particleB, snapshot.particleB);
+      stringConnectionMessage = validation?.message ??
+        "That Pulley cannot be moved there.";
+      updateUi();
+      return;
+    }
+    selectedParticleId = null;
+    selectedInclineId = null;
+    selectedTableId = null;
+    selectedStringId = string.id;
+    groundSelected = false;
+    stringConnectionMessage = null;
+    resetTime();
+  },
+  isPulleyPlacementValid: (position, mount, sourcePulleyId) =>
+    isPulleyPlacementValid(scene, position, mount, sourcePulleyId),
   onResizeIncline: (inclineId, horizontalLength) => {
     resizeIncline(inclineId, horizontalLength);
+  },
+  onResizeTable: (tableId, resizedTable) => {
+    const table = scene.tables.find((candidate) => candidate.id === tableId);
+    if (!table || !canPlaceTable(resizedTable, scene, table.id)) return;
+    table.topLeft = { ...resizedTable.topLeft };
+    table.height = resizedTable.height;
+    table.heightInput = resizedTable.heightInput;
+    resizeTable(table, resizedTable.width, resizedTable.widthInput);
   },
   onParticleDragChange: (particleId) => {
     draggedParticleId = particleId;
     if (particleId) {
       greatestHeightPauseEvent = null;
+      groundContactPauseEvent = null;
       verticalTargetPauseEvent = null;
     }
   },
   onDeleteParticle: removeParticle,
   onDeleteIncline: removeInclineById,
+  onDeleteTable: removeTableById,
+  onDeletePulley: removePulleyById,
   onPlacementPreviewChange: (preview) => {
     placementPreview = preview;
   },
@@ -1086,7 +1483,7 @@ window.addEventListener("keydown", (event) => {
   if (isTyping) return;
 
   if (
-    (selectedParticleId || selectedInclineId || selectedStringId) &&
+    (selectedParticleId || selectedInclineId || selectedStringId || selectedTableId) &&
     (event.key === "Delete" || event.key === "Backspace")
   ) {
     event.preventDefault();
@@ -1104,6 +1501,14 @@ window.addEventListener("keydown", (event) => {
     activeTool = "incline";
     placementPreview = null;
     controls.setTool("incline");
+  } else if (event.key === "3") {
+    activeTool = "table";
+    placementPreview = null;
+    controls.setTool("table");
+  } else if (event.key === "4") {
+    activeTool = "pulley";
+    placementPreview = null;
+    controls.setTool("pulley");
   }
 });
 
@@ -1133,36 +1538,59 @@ function renderFrame(timestamp: number): void {
       // The legacy pause-event solvers describe initial Cartesian flight and
       // horizontal-ground phases. Incline trajectories are piecewise in q and
       // must not be fed into those solvers as though they were free flight.
+      const pulleyParticleIds = new Set(
+        scene.pulleys.flatMap((pulley) => pulley.generatedParticleIds),
+      );
       const legacyEventParticles = scene.particles.filter(
-        (particle) => !particle.initialInclineContact,
+        (particle) =>
+          !particle.initialInclineContact && !pulleyParticleIds.has(particle.id),
       );
-      const nextGreatestHeightEvent = getNextGreatestHeightPauseEvent(
-        legacyEventParticles,
+      const scenePauseEventContext = createScenePauseEventContext(scene);
+      const nextGreatestHeightEvent = mergeParticlePauseEvents(
+        getNextGreatestHeightPauseEvent(
+          legacyEventParticles,
+          currentTime,
+          scene.settings.gravity,
+        ),
+        getNextPulleyGreatestHeightPauseEvent(
+          scene,
+          currentTime,
+          scenePauseEventContext,
+        ),
+      );
+      const nextGroundContactEvent = getNextSceneContactPauseEvent(
+        scene,
         currentTime,
-        scene.settings.gravity,
+        scenePauseEventContext,
       );
-      const nextGroundContactEvent = getNextGroundContactPauseEvent(
-        legacyEventParticles,
-        currentTime,
-        scene.settings.gravity,
-        scene.groundEnabled,
-        scene.groundHeight,
+      const nextVerticalTargetEvent = mergeParticlePauseEvents(
+        getNextVerticalTargetPauseEvent(
+          legacyEventParticles,
+          currentTime,
+          scene.settings.gravity,
+          scene.groundEnabled,
+          scene.groundHeight,
+        ),
+        getNextPulleyVerticalTargetPauseEvent(
+          scene,
+          currentTime,
+          scenePauseEventContext,
+        ),
       );
-      const nextVerticalTargetEvent = getNextVerticalTargetPauseEvent(
-        legacyEventParticles,
-        currentTime,
-        scene.settings.gravity,
-        scene.groundEnabled,
-        scene.groundHeight,
-      );
-      const nextParticleCoincidenceEvent =
+      const nextParticleCoincidenceEvent = mergeParticlePauseEvents(
         getNextParticleCoincidencePauseEvent(
           legacyEventParticles,
           currentTime,
           scene.settings.gravity,
           scene.groundEnabled,
           scene.groundHeight,
-        );
+        ),
+        getNextPulleyParticleCoincidencePauseEvent(
+          scene,
+          currentTime,
+          scenePauseEventContext,
+        ),
+      );
       const nextConnectedBoundaryEvent = getEarliestConnectedBoundaryEvent();
       const advance = advancePlayback(
         currentTime,
@@ -1194,6 +1622,11 @@ function renderFrame(timestamp: number): void {
           nextGreatestHeightEvent &&
           sameTime(advance.time, nextGreatestHeightEvent.time)
             ? nextGreatestHeightEvent
+            : null;
+        groundContactPauseEvent =
+          nextGroundContactEvent &&
+          sameTime(advance.time, nextGroundContactEvent.time)
+            ? nextGroundContactEvent
             : null;
         verticalTargetPauseEvent =
           nextVerticalTargetEvent &&
@@ -1274,6 +1707,15 @@ function renderFrame(timestamp: number): void {
           validTargetIds: getValidStringTargetIds(stringConnectionSourceId),
         }
       : null,
+    selectedTableId,
+    getGroundContactRangeMeasurements(
+      groundContactPauseEvent,
+      currentTime,
+      scene.groundHeight,
+      scene.settings,
+      scene.particles,
+      activeParticleStates,
+    ),
   );
   canvasExactValueHoverTargets = canvasRenderResult.hoverTargets;
   canvasTooltipExclusions = canvasRenderResult.tooltipExclusions ?? [];
@@ -1287,6 +1729,7 @@ function renderFrame(timestamp: number): void {
 function stepTime(interval: number, direction: "previous" | "next"): void {
   setPlaying(false);
   greatestHeightPauseEvent = null;
+  groundContactPauseEvent = null;
   verticalTargetPauseEvent = null;
   autoPauseTimeDisplay = null;
   currentTime = clampToConnectedBoundary(
@@ -1299,6 +1742,7 @@ function stepTime(interval: number, direction: "previous" | "next"): void {
 function resetTime(): void {
   setPlaying(false);
   greatestHeightPauseEvent = null;
+  groundContactPauseEvent = null;
   verticalTargetPauseEvent = null;
   autoPauseTimeDisplay = null;
   connectedBoundaryEvent = null;
@@ -1310,6 +1754,7 @@ function resetTime(): void {
 function setPlaying(playing: boolean): void {
   if (playing) {
     greatestHeightPauseEvent = null;
+    groundContactPauseEvent = null;
     verticalTargetPauseEvent = null;
     autoPauseTimeDisplay = null;
   }
@@ -1355,16 +1800,41 @@ function removeSelectedParticle(): void {
     removeParticle(selectedParticleId);
     return;
   }
+  if (selectedTableId) {
+    removeTableById(selectedTableId);
+    return;
+  }
   if (!selectedInclineId) return;
   removeInclineById(selectedInclineId);
+}
+
+function removeTableById(tableId: string): void {
+  if (!removeTable(scene, tableId)) return;
+  selectedTableId = null;
+  selectedStringId = null;
+  selectedParticleId = null;
+  selectedInclineId = null;
+  groundSelected = false;
+  resetTime();
 }
 
 function removeInclineById(inclineId: string): void {
   if (!removeIncline(scene, inclineId)) return;
   selectedInclineId = null;
   selectedStringId = null;
+  selectedTableId = null;
   selectedParticleId = null;
   groundSelected = false;
+  resetTime();
+}
+
+function removePulleyById(pulleyId: string): void {
+  if (!removePulley(scene, pulleyId)) return;
+  selectedParticleId = null;
+  groundSelected = false;
+  selectedInclineId = null;
+  selectedStringId = null;
+  selectedTableId = null;
   resetTime();
 }
 
@@ -1378,6 +1848,7 @@ function removeParticle(particleId: string): void {
   groundSelected = false;
   selectedInclineId = null;
   selectedStringId = null;
+  selectedTableId = null;
   resetTime();
   updateUi();
 }
@@ -1386,10 +1857,13 @@ function clearScene(): void {
   scene.particles.length = 0;
   scene.inclines.length = 0;
   scene.strings.length = 0;
+  scene.tables.length = 0;
+  scene.pulleys.length = 0;
   selectedParticleId = null;
   groundSelected = false;
   selectedInclineId = null;
   selectedStringId = null;
+  selectedTableId = null;
   cancelStringConnection(false);
   draggedParticleId = null;
   resetTime();
@@ -1418,6 +1892,9 @@ function getTriggeredAutoPauseTimeDisplay(
     const particle = scene.particles.find(
       (candidate) => candidate.id === greatestHeightEvent.particleIds[0],
     );
+    if (particle && isPulleyParticle(particle.id)) {
+      return formatWorkingValue(derivedValue(pauseTime));
+    }
     return particle
       ? getGreatestHeightPauseTimeDisplay(
           particle,
@@ -1430,11 +1907,20 @@ function getTriggeredAutoPauseTimeDisplay(
     const particle = scene.particles.find(
       (candidate) => candidate.id === groundContactEvent.particleIds[0],
     );
+    if (particle && isPulleyParticle(particle.id)) {
+      return formatWorkingValue(derivedValue(pauseTime));
+    }
+    const contactHeight = particle &&
+        groundContactEvent.contacts?.[particle.id] === "table"
+      ? calculateSceneState(scene, pauseTime).find(
+          (state) => state.id === particle.id,
+        )?.position.y ?? scene.groundHeight
+      : scene.groundHeight;
     return particle
       ? getGroundContactPauseTimeDisplay(
           particle,
           getDownwardAccelerationText(particle),
-          scene.groundHeight,
+          contactHeight,
         )
       : null;
   }
@@ -1443,6 +1929,9 @@ function getTriggeredAutoPauseTimeDisplay(
     const particle = scene.particles.find(
       (candidate) => candidate.id === verticalTargetEvent.particleIds[0],
     );
+    if (particle && isPulleyParticle(particle.id)) {
+      return formatWorkingValue(derivedValue(pauseTime));
+    }
     return particle
       ? getVerticalTargetPauseTimeDisplay(
           particle,
@@ -1455,6 +1944,12 @@ function getTriggeredAutoPauseTimeDisplay(
   }
 
   return null;
+}
+
+function isPulleyParticle(particleId: string): boolean {
+  return scene.pulleys.some((pulley) =>
+    pulley.generatedParticleIds.includes(particleId)
+  );
 }
 
 function refreshCurrentAutoPauseTimeDisplay(): void {
@@ -1503,6 +1998,12 @@ function updateSelectionUi(activeParticleStates: ParticleState[]): void {
   const selectedString = selectedStringId
     ? scene.strings.find((string) => string.id === selectedStringId) ?? null
     : null;
+  const selectedTable = selectedTableId
+    ? scene.tables.find((table) => table.id === selectedTableId) ?? null
+    : null;
+  const selectedPulleyLegLengths = selectedString
+    ? getPulleyStringLegLengths(scene, selectedString)
+    : null;
   const selectedConnectedTrajectory = selectedString
     ? calculateConnectedSystemTrajectory(scene, selectedString, currentTime)
     : null;
@@ -1512,7 +2013,8 @@ function updateSelectionUi(activeParticleStates: ParticleState[]): void {
     ? createConnectedSystemDisplay(scene, connectedAnalysis)
     : null;
   controls.setSelected(
-    selectedParticleState !== null || selectedIncline !== null || selectedString !== null,
+    selectedParticleState !== null || selectedIncline !== null ||
+      selectedString !== null || selectedTable !== null,
   );
   controls.setSelectionProperties(
     selectedString && connectedAnalysis && connectedDisplay
@@ -1548,8 +2050,17 @@ function updateSelectionUi(activeParticleStates: ParticleState[]): void {
             connectedBoundaryEvent?.time === currentTime
               ? connectedBoundaryEvent.kind === "impulsive-tautening"
                 ? connectedBoundaryEvent.message
-                : `Connected-system limit reached. ${connectedBoundaryEvent.message} Further direct-string motion is not supported.`
+                : `Connected-system limit reached. ${connectedBoundaryEvent.message} Further motion for this connection is not supported.`
               : null,
+          pulley:
+            selectedString.route?.kind === "pulley" && selectedPulleyLegLengths
+            ? {
+                leftLength: selectedPulleyLegLengths.left.length,
+                leftLengthText: selectedPulleyLegLengths.left.input,
+                rightLength: selectedPulleyLegLengths.right.length,
+                rightLengthText: selectedPulleyLegLengths.right.input,
+              }
+            : null,
         }
       : selectedParticleState && selectedParticle
       ? createParticleSelectionProperties(selectedParticle, selectedParticleState)
@@ -1568,6 +2079,20 @@ function updateSelectionUi(activeParticleStates: ParticleState[]): void {
               ? selectedIncline.roughness.coefficientInput
               : "0",
           }
+        : selectedTable
+          ? {
+              type: "table",
+              position: selectedTable.topLeft,
+              widthInput: selectedTable.widthInput,
+              heightInput: selectedTable.heightInput,
+              rough: selectedTable.roughness.kind === "rough",
+              friction: selectedTable.roughness.kind === "rough"
+                ? selectedTable.roughness.coefficientOfFriction
+                : 0,
+              frictionInput: selectedTable.roughness.kind === "rough"
+                ? selectedTable.roughness.coefficientInput
+                : "0",
+            }
         : groundSelected && scene.groundEnabled
         ? {
             type: "ground",
@@ -1593,6 +2118,7 @@ function createParticleSelectionProperties(
     groundRough: scene.groundRough,
     groundFriction: scene.groundFriction,
     inclines: scene.inclines,
+    tables: scene.tables,
   };
   const trajectory = calculateSurfaceTrajectory(
     particle,
@@ -1622,14 +2148,60 @@ function createParticleSelectionProperties(
   const activeConnectedEndpoint = connectedConstraintActive
     ? connectedEndpoint
     : null;
-  let phase: KinematicPhase = trajectory.phase;
+  const initialTable = particle.initialTableContact
+    ? scene.tables.find(
+        (candidate) => candidate.id === particle.initialTableContact?.tableId,
+      )
+    : undefined;
+  const tableAnalysis = initialTable
+    ? analyseTableContactForces(
+        particle,
+        initialTable,
+        currentTime,
+        scene.settings.gravity,
+      )
+    : null;
+  let phase: KinematicPhase = tableAnalysis && initialTable
+    ? tableAnalysis.kind === "table-contact" || tableAnalysis.kind === "endpoint"
+      ? {
+          kind: "grounded",
+          startTime: 0,
+          initialPosition: pointAtTableCoordinate(
+            initialTable,
+            particle.initialTableContact!.q,
+          ),
+          initialVelocity: { x: particle.initialVelocity.x, y: 0 },
+          acceleration: { x: tableAnalysis.tangentialAcceleration, y: 0 },
+        }
+      : {
+          kind: "free-flight",
+          startTime: tableAnalysis.kind === "lift-off"
+            ? 0
+            : tableAnalysis.endpointTime ?? 0,
+          initialPosition: pointAtTableCoordinate(initialTable, tableAnalysis.q),
+          initialVelocity: tableAnalysis.kind === "lift-off"
+            ? { ...particle.initialVelocity }
+            : { x: tableAnalysis.tangentialVelocity, y: 0 },
+          acceleration: { ...tableAnalysis.nonContact.acceleration },
+        }
+    : trajectory.phase.kind === "table-contact"
+      ? { ...trajectory.phase, kind: "grounded" }
+      : trajectory.phase;
   if (
     connectedTrajectory &&
     connectedTrajectory.analysis.commonAcceleration !== null
   ) {
     const activeConnectedAnalysis = connectedTrajectory.analysis;
-    const tangent = activeConnectedAnalysis.support.tangent;
-    const commonAcceleration = activeConnectedAnalysis.commonAcceleration ?? 0;
+    const tangent = activeConnectedEndpoint?.pathTangent ??
+      (activeConnectedAnalysis.support.kind === "pulley"
+        ? { x: 0, y: 1 }
+        : activeConnectedAnalysis.support.tangent);
+    const scalarVelocity = activeConnectedAnalysis.support.kind === "pulley"
+      ? activeConnectedEndpoint?.scalarVelocity ?? 0
+      : activeConnectedAnalysis.scalarVelocity;
+    const scalarAcceleration = activeConnectedAnalysis.support.kind === "pulley"
+      ? activeConnectedEndpoint?.scalarAcceleration ?? 0
+      : activeConnectedAnalysis.commonAcceleration ?? 0;
     const connectedPhaseStart = connectedTrajectory.tauteningEvent?.time ?? 0;
     const connectedPhaseState = connectedTrajectory.tauteningEvent?.states.find(
       (state) => state.id === particle.id,
@@ -1637,36 +2209,56 @@ function createParticleSelectionProperties(
     phase = {
       kind: activeConnectedAnalysis.support.kind === "ground"
         ? "grounded"
-        : "incline-contact",
+        : activeConnectedAnalysis.support.kind === "incline"
+          ? "incline-contact"
+          : particle.initialInclineContact
+            ? "incline-contact"
+            : particle.initialTableContact
+              ? "grounded"
+              : "free-flight",
       startTime: connectedPhaseStart,
       initialPosition: {
         ...(connectedPhaseState?.position ?? particle.initialPosition),
       },
       initialVelocity: {
-        x: tangent.x * activeConnectedAnalysis.scalarVelocity,
-        y: tangent.y * activeConnectedAnalysis.scalarVelocity,
+        x: tangent.x * scalarVelocity,
+        y: tangent.y * scalarVelocity,
       },
       acceleration: {
-        x: tangent.x * commonAcceleration,
-        y: tangent.y * commonAcceleration,
+        x: tangent.x * scalarAcceleration,
+        y: tangent.y * scalarAcceleration,
       },
-      ...(activeConnectedAnalysis.support.kind === "incline"
+      ...(activeConnectedAnalysis.support.kind === "incline" ||
+          activeConnectedAnalysis.support.kind === "pulley" &&
+          particle.initialInclineContact
         ? {
             incline: {
-              inclineId: activeConnectedAnalysis.support.inclineId,
+              inclineId: activeConnectedAnalysis.support.kind === "incline"
+                ? activeConnectedAnalysis.support.inclineId
+                : particle.initialInclineContact!.inclineId,
               initialQ: connectedEndpoint?.q ?? 0,
-              initialTangentialVelocity: activeConnectedAnalysis.scalarVelocity,
-              tangentialAcceleration: commonAcceleration,
-              slopeLength: activeConnectedAnalysis.support.slopeLength,
+              initialTangentialVelocity: scalarVelocity,
+              tangentialAcceleration: scalarAcceleration,
+              slopeLength: activeConnectedAnalysis.support.kind === "incline"
+                ? activeConnectedAnalysis.support.slopeLength
+                : getInclineGeometry(
+                    scene.inclines.find(
+                      (candidate) =>
+                        candidate.id === particle.initialInclineContact!.inclineId,
+                    )!,
+                  ).slopeLength,
               endpointTime: connectedTrajectory.boundaryEvent?.time ?? null,
             },
           }
         : {}),
     };
   }
-  const connectedInclineId = connectedConstraintActive &&
-      connectedAnalysis.support.kind === "incline"
-    ? connectedAnalysis.support.inclineId
+  const connectedInclineId = connectedConstraintActive
+    ? connectedAnalysis.support.kind === "incline"
+      ? connectedAnalysis.support.inclineId
+      : connectedAnalysis.support.kind === "pulley"
+        ? particle.initialInclineContact?.inclineId ?? null
+        : null
     : null;
   const activeInclineId = connectedInclineId ??
     (trajectory.contact.kind === "incline" ? trajectory.contact.inclineId : null);
@@ -1675,64 +2267,19 @@ function createParticleSelectionProperties(
     : undefined;
   const inclineContactActive = activeIncline !== undefined &&
     (connectedInclineId !== null || trajectory.contact.kind === "incline");
-  const groundContactActive = (
-    connectedConstraintActive && connectedAnalysis.support.kind === "ground"
-  ) || trajectory.contact.kind === "ground";
-  const activeContactFriction = activeConnectedEndpoint?.friction ??
-    (trajectory.contact.kind === "incline" || trajectory.contact.kind === "ground"
-      ? trajectory.contact.friction
-      : null);
-  const normalReaction = activeIncline && inclineContactActive
-    ? createInclineNormalReactionDisplay(
-        particle,
-        activeIncline,
-        scene.settings,
-        activeConnectedEndpoint?.normalReactionMagnitude ??
-          (trajectory.contact.kind === "incline"
-            ? trajectory.contact.normalReactionMagnitude
-            : 0),
-      ) ?? 0
-    : groundContactActive
-      ? activeConnectedEndpoint?.normalReactionMagnitude ??
-        (trajectory.contact.kind === "ground"
-          ? trajectory.contact.normalReactionMagnitude
-          : 0)
-      : 0;
-  const friction = inclineContactActive && activeIncline &&
-      activeContactFriction &&
-      activeIncline.roughness.kind === "rough"
-    ? createFrictionDisplay(
-        particle,
-        scene.settings,
-        normalReaction,
-        activeContactFriction,
-        activeIncline.roughness.coefficientOfFriction,
-        activeIncline.roughness.coefficientInput,
-        activeIncline,
-      )
-    : groundContactActive && scene.groundRough && activeContactFriction
-      ? createFrictionDisplay(
-          particle,
-          scene.settings,
-          normalReaction,
-          activeContactFriction,
-          scene.groundFriction,
-          String(scene.groundFriction),
-          null,
-        )
-      : null;
+  const forceContact = getParticleForceContactDisplay(
+    scene,
+    particle,
+    currentTime,
+  );
+  const normalReaction = forceContact.normalReaction;
+  const friction = forceContact.friction;
   const forceDisplay = createParticleForceDisplay(
     particle,
     scene.settings,
     normalReaction,
     friction,
-    connectedAnalysis?.state === "taut" && connectedEndpoint &&
-        connectedAnalysis.tension > 1e-12
-      ? {
-          magnitude: connectedAnalysis.tension,
-          vector: connectedEndpoint.tensionVector,
-        }
-      : null,
+    forceContact.tension,
   );
   const inclineForceResolution = activeIncline && inclineContactActive
     ? createInclineForceResolutionDisplay(
@@ -2081,6 +2628,7 @@ function getMotionGraphPlan(
       groundRough: scene.groundRough,
       groundFriction: scene.groundFriction,
       inclines: scene.inclines,
+      tables: scene.tables,
     },
   );
   const plan = createMotionGraphPlan(

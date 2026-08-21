@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { isPointOnInclineSegment, pointAtInclineCoordinate } from "../geometry/inclineGeometry";
 import { createIncline } from "../model/Incline";
 import { createParticle } from "../model/Particle";
+import { createTable } from "../model/Table";
 import { calculateSurfaceTrajectory } from "./surfaceTrajectory";
 
 const environment = {
@@ -121,5 +122,35 @@ describe("surface trajectory transitions", () => {
     expect(result.phase.kind).toBe("free-flight");
     expect(result.contact.kind).toBe("none");
     expect(result.state.position.y).toBeGreaterThan(0);
+  });
+
+  it("lands from free flight on a finite Table top", () => {
+    const table = createTable("table", { x: -2, y: 3 }, 4, 3);
+    const particle = createParticle("particle", { x: 0, y: 8 });
+
+    const result = calculateSurfaceTrajectory(particle, 2, {
+      ...environment,
+      groundEnabled: false,
+      tables: [table],
+    });
+
+    expect(result.phase.kind).toBe("table-contact");
+    expect(result.contact.kind).toBe("table");
+    expect(result.state.position).toEqual({ x: 0, y: 3 });
+    expect(result.state.velocity.y).toBe(0);
+  });
+
+  it("does not collide with a Table when the free-flight path misses its top", () => {
+    const table = createTable("table", { x: -2, y: 3 }, 4, 3);
+    const particle = createParticle("particle", { x: 5, y: 8 });
+
+    const result = calculateSurfaceTrajectory(particle, 2, {
+      ...environment,
+      groundEnabled: false,
+      tables: [table],
+    });
+
+    expect(result.phase.kind).toBe("free-flight");
+    expect(result.state.position.y).toBeLessThan(3);
   });
 });

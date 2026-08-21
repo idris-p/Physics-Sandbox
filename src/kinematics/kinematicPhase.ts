@@ -3,7 +3,11 @@ import type { Particle } from "../model/Particle";
 import type { PhysicsEnvironment } from "../physics/calculateParticleState";
 import { calculateSurfaceTrajectory } from "../physics/surfaceTrajectory";
 
-export type KinematicPhaseKind = "free-flight" | "grounded" | "incline-contact";
+export type KinematicPhaseKind =
+  | "free-flight"
+  | "grounded"
+  | "incline-contact"
+  | "table-contact";
 
 export interface KinematicPhase {
   kind: KinematicPhaseKind;
@@ -26,5 +30,8 @@ export function determineActiveKinematicPhase(
   sceneTime: number,
   environment: PhysicsEnvironment,
 ): KinematicPhase {
-  return calculateSurfaceTrajectory(particle, sceneTime, environment).phase;
+  const phase = calculateSurfaceTrajectory(particle, sceneTime, environment).phase;
+  return phase.kind === "table-contact"
+    ? { ...phase, kind: "grounded" }
+    : phase;
 }

@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { isPointOnInclineSegment } from "../geometry/inclineGeometry";
+import {
+  getInclineGeometry,
+  isPointOnInclineSegment,
+} from "../geometry/inclineGeometry";
 import { createIncline } from "../model/Incline";
 import { createParticle } from "../model/Particle";
+import { createPulley } from "../model/Pulley";
+import { createScene } from "../model/Scene";
+import { createTable } from "../model/Table";
+import { addPulleyApparatus } from "../model/pulleyScene";
 import {
+  canPlaceInclineInScene,
   findInclineGridSnap,
   findInclineSnap,
   placeParticlesOnInclineSurface,
@@ -166,5 +174,85 @@ describe("deliberate incline particle setup", () => {
     expect(surface.initialInclineContact?.inclineId).toBe(incline.id);
     expect(otherContact.initialPosition).toEqual({ x: 5, y: 1 });
     expect(otherContact.initialInclineContact?.inclineId).toBe("other-incline");
+  });
+
+  it("rejects Incline overlap with Tables, Pulleys, Strings, and Inclines", () => {
+    const candidate = createIncline("candidate", { x: 0, y: 0 });
+
+    const tableScene = createScene();
+    tableScene.tables.push(createTable("table", { x: 4, y: 4 }, 4, 4));
+    expect(canPlaceInclineInScene(candidate, tableScene)).toBe(false);
+
+    const pulleyScene = createScene();
+    pulleyScene.pulleys.push(createPulley(
+      "pulley",
+      { x: 5, y: 1 },
+      { kind: "free" },
+      "string",
+      ["a", "b"],
+    ));
+    expect(canPlaceInclineInScene(candidate, pulleyScene)).toBe(false);
+
+    const stringScene = createScene();
+    stringScene.particles.push(
+      createParticle("a", { x: -1, y: 1 }),
+      createParticle("b", { x: 11, y: 1 }),
+    );
+    stringScene.strings.push({
+      id: "string",
+      particleAId: "a",
+      particleBId: "b",
+      length: 12,
+      lengthInput: "12",
+    });
+    expect(canPlaceInclineInScene(candidate, stringScene)).toBe(false);
+
+    const inclineScene = createScene();
+    inclineScene.inclines.push(createIncline("other", { x: 2, y: 1 }));
+    expect(canPlaceInclineInScene(candidate, inclineScene)).toBe(false);
+
+    const pulleyParticleScene = createScene();
+    pulleyParticleScene.pulleys.push(createPulley(
+      "outside-pulley",
+      { x: 20, y: 20 },
+      { kind: "free" },
+      "pulley-string",
+      ["pulley-a", "pulley-b"],
+    ));
+    const pulleyParticle = createParticle("pulley-a", { x: 5, y: 3.1 });
+    pulleyParticle.shape = "square";
+    pulleyParticleScene.particles.push(
+      pulleyParticle,
+      createParticle("pulley-b", { x: 20, y: 15 }),
+    );
+    expect(canPlaceInclineInScene(candidate, pulleyParticleScene)).toBe(false);
+  });
+
+  it("allows particles and solid boundaries to touch an Incline", () => {
+    const candidate = createIncline("candidate", { x: 0, y: 0 });
+    const scene = createScene();
+    scene.particles.push(createParticle("particle", { x: 5, y: 1 }));
+    scene.tables.push(createTable("touching", { x: 10, y: 4 }, 3, 4));
+
+    expect(canPlaceInclineInScene(candidate, scene)).toBe(true);
+  });
+
+  it("ignores an Incline's own mounted Pulley apparatus", () => {
+    const scene = createScene();
+    const incline = createIncline("incline", { x: 0, y: 0 });
+    scene.inclines.push(incline);
+    expect(addPulleyApparatus(
+      scene,
+      {
+        pulleyId: "pulley",
+        stringId: "string",
+        particleAId: "a",
+        particleBId: "b",
+      },
+      getInclineGeometry(incline).upperEndpoint,
+      { kind: "incline-end", inclineId: incline.id },
+    )).not.toBeNull();
+
+    expect(canPlaceInclineInScene(incline, scene)).toBe(true);
   });
 });

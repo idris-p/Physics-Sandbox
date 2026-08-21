@@ -3,6 +3,7 @@ import {
   getInclineGeometry,
   pointAtInclineCoordinate,
 } from "../geometry/inclineGeometry";
+import { pointAtTableCoordinate } from "../geometry/tableGeometry";
 import type { Vec2 } from "../math/Vec2";
 import type { InextensibleString } from "../model/InextensibleString";
 import type { Particle, ParticleState } from "../model/Particle";
@@ -18,9 +19,15 @@ import {
   type SurfaceTrajectoryEnvironment,
   type SurfaceTrajectoryPhase,
 } from "./surfaceTrajectory";
+import {
+  calculatePulleyConnectedTrajectory,
+  getPulleyTrajectoryBoundaryEvent,
+} from "./pulleyTrajectory";
+import { analyseTableContactForces } from "../dynamics/tableContact";
 
 export interface ConnectedBoundaryEvent {
-  kind: "unsupported-surface-transition" | "impulsive-tautening";
+  kind: "unsupported-surface-transition" | "impulsive-tautening" |
+    "unsupported-path-boundary" | "unsupported-slack-pulley";
   time: number;
   particleId?: string;
   endpoint?: "lower" | "upper";
@@ -48,6 +55,9 @@ export function calculateConnectedSystemTrajectory(
   string: InextensibleString,
   time: number,
 ): ConnectedSystemTrajectory | null {
+  if (string.route?.kind === "pulley") {
+    return calculatePulleyConnectedTrajectory(scene, string, time);
+  }
   const analysis = analyseConnectedSystem(scene, string);
   if (!analysis) return null;
   if (analysis.state === "taut" && analysis.commonAcceleration !== null) {
@@ -60,6 +70,9 @@ export function getConnectedTrajectoryBoundaryEvent(
   scene: Scene,
   string: InextensibleString,
 ): ConnectedBoundaryEvent | null {
+  if (string.route?.kind === "pulley") {
+    return getPulleyTrajectoryBoundaryEvent(scene, string);
+  }
   const analysis = analyseConnectedSystem(scene, string);
   if (!analysis) return null;
   if (analysis.state === "taut" && analysis.commonAcceleration !== null) {
@@ -206,6 +219,18 @@ function resolveSlackOutcome(
   string: InextensibleString,
   analysis: ConnectedSystemAnalysis,
 ): SlackOutcome {
+  if (analysis.support.kind === "pulley") {
+    return {
+      tautening: null,
+      phaseScene: null,
+      tautAnalysis: null,
+      boundary: {
+        kind: "unsupported-slack-pulley",
+        time: 0,
+        message: "Slack Pulley routing requires unsupported loose-rope mechanics.",
+      },
+    };
+  }
   let minimumTime = 0;
   for (let transition = 0; transition < MAX_SLACK_TRANSITIONS; transition += 1) {
     const events = findSlackEvents(scene, string, analysis, minimumTime);
@@ -259,6 +284,19 @@ function findSlackEvents(
   analysis: ConnectedSystemAnalysis,
   minimumTime: number,
 ): SlackEvents {
+  if (analysis.support.kind === "pulley") {
+    return {
+      tautening: null,
+      surfaceBoundary: {
+        kind: "unsupported-slack-pulley",
+        time: 0,
+        message: "Slack Pulley routing requires unsupported loose-rope mechanics.",
+      },
+    };
+  }
+  if (analysis.support.kind === "table") {
+    return findSlackTableEvents(scene, string, analysis, minimumTime);
+  }
   const particleA = findParticle(scene, string.particleAId);
   const particleB = findParticle(scene, string.particleBId);
   if (!particleA || !particleB) return { tautening: null, surfaceBoundary: null };
@@ -336,6 +374,74 @@ function findSlackEvents(
       ? unsupportedSlackBoundary(time)
       : null;
   return { tautening: null, surfaceBoundary };
+}
+
+function findSlackTableEvents(
+  scene: Scene,
+  string: InextensibleString,
+  analysis: ConnectedSystemAnalysis,
+  minimumTime: number,
+): SlackEvents {
+  if (analysis.support.kind !== "table") {
+    return { tautening: null, surfaceBoundary: null };
+  }
+  const tableId = analysis.support.tableId;
+  const table = scene.tables.find(
+    (candidate) => candidate.id === tableId,
+  );
+  const particleA = findParticle(scene, string.particleAId);
+  const particleB = findParticle(scene, string.particleBId);
+  if (!table || !particleA || !particleB) {
+    return { tautening: null, surfaceBoundary: unsupportedSlackBoundary(0) };
+  }
+  const contactA = analyseTableContactForces(
+    particleA,
+    table,
+    0,
+    scene.settings.gravity,
+  );
+  const contactB = analyseTableContactForces(
+    particleB,
+    table,
+    0,
+    scene.settings.gravity,
+  );
+  if (contactA.kind === "lift-off" || contactB.kind === "lift-off") {
+    return { tautening: null, surfaceBoundary: unsupportedSlackBoundary(0) };
+  }
+  const endpointTime = Math.min(
+    contactA.endpointTime ?? Number.POSITIVE_INFINITY,
+    contactB.endpointTime ?? Number.POSITIVE_INFINITY,
+  );
+  const elapsed = firstMaximumExtensionTime(
+    contactB.q - contactA.q,
+    contactB.tangentialVelocity - contactA.tangentialVelocity,
+    contactB.tangentialAcceleration - contactA.tangentialAcceleration,
+    string.length,
+    endpointTime,
+    minimumTime,
+  );
+  if (elapsed === null) {
+    return {
+      tautening: null,
+      surfaceBoundary: Number.isFinite(endpointTime)
+        ? unsupportedSlackBoundary(endpointTime)
+        : null,
+    };
+  }
+  const states = independentStates(scene, string, elapsed);
+  const scalarVelocityA = states[0].velocity.x;
+  const scalarVelocityB = states[1].velocity.x;
+  return {
+    tautening: {
+      time: elapsed,
+      states,
+      scalarVelocityA,
+      scalarVelocityB,
+      compatibleVelocity: nearlyEqualVelocity(scalarVelocityA, scalarVelocityB),
+    },
+    surfaceBoundary: null,
+  };
 }
 
 function firstMaximumExtensionTime(
@@ -424,8 +530,20 @@ function createTauteningPhaseScene(
             ),
           };
         }
+      } else if (support.kind === "table") {
+        phaseParticle.initialInclineContact = undefined;
+        const table = scene.tables.find(
+          (candidate) => candidate.id === support.tableId,
+        );
+        if (table) {
+          phaseParticle.initialTableContact = {
+            tableId: table.id,
+            q: state.position.x - table.topLeft.x,
+          };
+        }
       } else {
         phaseParticle.initialInclineContact = undefined;
+        phaseParticle.initialTableContact = undefined;
       }
       return phaseParticle;
     }),
@@ -436,9 +554,16 @@ function createTauteningPhaseScene(
 export function getConnectedBoundaryEvent(
   analysis: ConnectedSystemAnalysis,
 ): ConnectedBoundaryEvent | null {
-  if (analysis.state !== "taut" || analysis.support.kind !== "incline") {
+  if (
+    analysis.state !== "taut" ||
+    analysis.support.kind === "ground" ||
+    analysis.support.kind === "pulley"
+  ) {
     return null;
   }
+  const pathLength = analysis.support.kind === "incline"
+    ? analysis.support.slopeLength
+    : analysis.support.width;
   const candidates = [analysis.endpointA, analysis.endpointB].flatMap((endpoint) => {
     const lowerTime = firstEndpointTime(
       endpoint.q,
@@ -450,7 +575,7 @@ export function getConnectedBoundaryEvent(
       endpoint.q,
       analysis.scalarVelocity,
       analysis.commonAcceleration ?? 0,
-      analysis.support.kind === "incline" ? analysis.support.slopeLength : 0,
+      pathLength,
     );
     return [
       ...(lowerTime === null
@@ -468,7 +593,9 @@ export function getConnectedBoundaryEvent(
     time: first.time,
     particleId: first.particleId,
     endpoint: first.endpoint,
-    message: `${first.particleId} has reached the ${first.endpoint} end of the Incline.`,
+    message: `${first.particleId} has reached the ${first.endpoint} end of the ${
+      analysis.support.kind === "incline" ? "Incline" : "Table"
+    }.`,
   };
 }
 
@@ -497,6 +624,7 @@ function physicsEnvironment(scene: Scene): SurfaceTrajectoryEnvironment {
     groundRough: scene.groundRough,
     groundFriction: scene.groundFriction,
     inclines: scene.inclines,
+    tables: scene.tables,
   };
 }
 
@@ -506,7 +634,7 @@ function phaseMatchesSupport(
 ): boolean {
   return support.kind === "ground"
     ? phase.kind === "grounded"
-    : phase.kind === "incline-contact" &&
+    : support.kind === "incline" && phase.kind === "incline-contact" &&
         phase.incline?.inclineId === support.inclineId;
 }
 
@@ -518,6 +646,12 @@ function phaseCoordinateAt(
 ): number {
   const position = phasePositionAt(phase, time);
   if (support.kind === "ground") return position.x;
+  if (support.kind === "table") {
+    const table = scene.tables.find(
+      (candidate) => candidate.id === support.tableId,
+    );
+    return table ? position.x - table.topLeft.x : 0;
+  }
   const incline = scene.inclines.find(
     (candidate) => candidate.id === support.inclineId,
   );
@@ -558,10 +692,20 @@ function createState(
   scalarAcceleration: number,
   analysis: ConnectedSystemAnalysis,
 ): ParticleState {
+  if (analysis.support.kind === "pulley") {
+    throw new Error("Pulley endpoint states require routed path geometry.");
+  }
   const tangent = analysis.support.tangent;
   let position: Vec2;
   if (analysis.support.kind === "ground") {
     position = { x: q, y: scene.groundHeight };
+  } else if (analysis.support.kind === "table") {
+    const tableId = analysis.support.tableId;
+    const table = scene.tables.find(
+      (candidate) => candidate.id === tableId,
+    );
+    if (!table) throw new Error("Connected Table no longer exists.");
+    position = pointAtTableCoordinate(table, q);
   } else {
     const inclineId = analysis.support.inclineId;
     const incline = scene.inclines.find(

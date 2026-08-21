@@ -3,15 +3,24 @@ import {
   getInclineGeometry,
   getInclineTriangleVertices,
 } from "../geometry/inclineGeometry";
+import { pointAtTableCoordinate } from "../geometry/tableGeometry";
 import type { Vec2 } from "../math/Vec2";
 import type { InextensibleString } from "../model/InextensibleString";
 import type { Particle } from "../model/Particle";
 import type { Scene } from "../model/Scene";
 import { analyseNonContactForces } from "./forceAnalysis";
+import { removePulleysForStringIds } from "../model/pulleyScene";
+import { getPulleyRouteGeometry } from "../geometry/pulleyGeometry";
+import {
+  endpointSegmentLength,
+  type PulleyEndpointPath,
+  validatePulleyString,
+} from "./pulleyEndpointPath";
 
 export type SharedStringSupport =
   | { kind: "ground"; tangent: Vec2 }
-  | { kind: "incline"; inclineId: string; tangent: Vec2; slopeLength: number };
+  | { kind: "incline"; inclineId: string; tangent: Vec2; slopeLength: number }
+  | { kind: "table"; tableId: string; tangent: Vec2; width: number };
 
 export type StringConnectionRejection =
   | "same-particle"
@@ -44,6 +53,13 @@ export type StringConnectionValidation =
 export type CreateStringResult =
   | { ok: true; string: InextensibleString }
   | { ok: false; reason: StringConnectionRejection; message: string };
+
+export type PulleyStringLeg = "left" | "right";
+
+export interface PulleyStringLegLengths {
+  left: { length: number; input: string };
+  right: { length: number; input: string };
+}
 
 export function validateStringConnection(
   scene: Scene,
@@ -78,7 +94,7 @@ export function validateStringConnection(
   if (!supportA || !supportB) {
     return rejection(
       "free-flight",
-      "Both particles must be supported on the same ground or Incline.",
+      "Both particles must be supported on the same Ground, Table, or Incline.",
     );
   }
   if (!sameSupport(supportA.support, supportB.support)) {
@@ -185,23 +201,32 @@ export function removeString(scene: Scene, stringId: string): boolean {
   const index = scene.strings.findIndex((string) => string.id === stringId);
   if (index < 0) return false;
   scene.strings.splice(index, 1);
+  removePulleysForStringIds(scene, new Set([stringId]));
   return true;
 }
 
 export function removeStringsForParticle(scene: Scene, particleId: string): void {
-  scene.strings = scene.strings.filter(
-    (string) => string.particleAId !== particleId && string.particleBId !== particleId,
+  const removedIds = new Set(
+    scene.strings
+      .filter((string) =>
+        string.particleAId === particleId || string.particleBId === particleId
+      )
+      .map((string) => string.id),
   );
+  scene.strings = scene.strings.filter((string) => !removedIds.has(string.id));
+  removePulleysForStringIds(scene, removedIds);
 }
 
 export function getInvalidStringIds(scene: Scene): string[] {
   return scene.strings.flatMap((string) =>
-    validateStringConnection(
-      scene,
-      string.particleAId,
-      string.particleBId,
-      string.id,
-    ).valid
+    (string.route?.kind === "pulley"
+      ? validatePulleyString(scene, string).valid
+      : validateStringConnection(
+          scene,
+          string.particleAId,
+          string.particleBId,
+          string.id,
+        ).valid)
       ? []
       : [string.id]
   );
@@ -215,6 +240,12 @@ export function setStringLength(
 ): { ok: true } | { ok: false; message: string } {
   const string = scene.strings.find((candidate) => candidate.id === stringId);
   if (!string) return { ok: false, message: "The string no longer exists." };
+  if (string.route?.kind === "pulley") {
+    return {
+      ok: false,
+      message: "Edit the Pulley string's left or right leg length.",
+    };
+  }
   const support = getStringEndpointCoordinates(scene, string);
   if (!support) {
     return { ok: false, message: "The string endpoints are no longer supported." };
@@ -231,12 +262,123 @@ export function setStringLength(
   return { ok: true };
 }
 
+export function getPulleyStringLegLengths(
+  scene: Scene,
+  string: InextensibleString,
+): PulleyStringLegLengths | null {
+  const geometry = currentPulleyLegGeometry(scene, string);
+  if (!geometry || string.route?.kind !== "pulley") return null;
+  return {
+    left: {
+      length: string.route.leftLength ?? geometry.leftLength,
+      input: string.route.leftLengthInput ?? String(geometry.leftLength),
+    },
+    right: {
+      length: string.route.rightLength ?? geometry.rightLength,
+      input: string.route.rightLengthInput ?? String(geometry.rightLength),
+    },
+  };
+}
+
+export function setPulleyStringLegLength(
+  scene: Scene,
+  stringId: string,
+  leg: PulleyStringLeg,
+  length: number,
+  enteredText: string,
+): { ok: true } | { ok: false; message: string } {
+  const string = scene.strings.find((candidate) => candidate.id === stringId);
+  if (!string || string.route?.kind !== "pulley") {
+    return { ok: false, message: "The Pulley string no longer exists." };
+  }
+  if (!Number.isFinite(length) || length < 0) {
+    return { ok: false, message: "Pulley leg length must be non-negative." };
+  }
+  const validation = validatePulleyString(scene, string);
+  const legLengths = getPulleyStringLegLengths(scene, string);
+  const geometry = currentPulleyLegGeometry(scene, string);
+  if (!validation.valid || !legLengths || !geometry) {
+    return {
+      ok: false,
+      message: validation.valid
+        ? "The Pulley route is no longer valid."
+        : validation.message,
+    };
+  }
+
+  const particle = leg === "left" ? validation.particleA : validation.particleB;
+  const path = leg === "left" ? validation.endpointA : validation.endpointB;
+  const previousPlacement = {
+    position: { ...particle.initialPosition },
+    inclineContact: particle.initialInclineContact
+      ? { ...particle.initialInclineContact }
+      : undefined,
+    tableContact: particle.initialTableContact
+      ? { ...particle.initialTableContact }
+      : undefined,
+  };
+  const previousString = {
+    length: string.length,
+    lengthInput: string.lengthInput,
+    leftLength: string.route.leftLength,
+    leftLengthInput: string.route.leftLengthInput,
+    rightLength: string.route.rightLength,
+    rightLengthInput: string.route.rightLengthInput,
+  };
+
+  placePulleyEndpointAtLength(scene, particle, path, length);
+  if (leg === "left") {
+    string.route.leftLength = length;
+    string.route.leftLengthInput = enteredText;
+  } else {
+    string.route.rightLength = length;
+    string.route.rightLengthInput = enteredText;
+  }
+  const configuredLeft = leg === "left" ? length : legLengths.left.length;
+  const configuredRight = leg === "right" ? length : legLengths.right.length;
+  string.length = geometry.fixedLength + configuredLeft + configuredRight;
+  string.lengthInput = String(string.length);
+
+  const updatedValidation = validatePulleyString(scene, string);
+  if (updatedValidation.valid) return { ok: true };
+
+  particle.initialPosition = previousPlacement.position;
+  particle.initialInclineContact = previousPlacement.inclineContact;
+  particle.initialTableContact = previousPlacement.tableContact;
+  string.length = previousString.length;
+  string.lengthInput = previousString.lengthInput;
+  string.route.leftLength = previousString.leftLength;
+  string.route.leftLengthInput = previousString.leftLengthInput;
+  string.route.rightLength = previousString.rightLength;
+  string.route.rightLengthInput = previousString.rightLengthInput;
+  return { ok: false, message: updatedValidation.message };
+}
+
 export function resizeStringToCurrentSeparation(
   scene: Scene,
   stringId: string,
 ): boolean {
   const string = scene.strings.find((candidate) => candidate.id === stringId);
   if (!string) return false;
+  if (string.route?.kind === "pulley") {
+    const geometry = currentPulleyLegGeometry(scene, string);
+    if (!geometry) return false;
+    const routedLength = geometry.fixedLength + geometry.leftLength +
+      geometry.rightLength;
+    if (
+      Math.abs(routedLength - string.length) <=
+        geometryTolerance(routedLength, string.length)
+    ) {
+      return false;
+    }
+    string.length = routedLength;
+    string.lengthInput = String(routedLength);
+    string.route.leftLength = geometry.leftLength;
+    string.route.leftLengthInput = String(geometry.leftLength);
+    string.route.rightLength = geometry.rightLength;
+    string.route.rightLengthInput = String(geometry.rightLength);
+    return true;
+  }
   const endpoints = getStringEndpointCoordinates(scene, string);
   if (!endpoints) return false;
   const separation = Math.abs(endpoints.qB - endpoints.qA);
@@ -313,6 +455,39 @@ function getInitialParticleSupport(
     };
   }
 
+  if (particle.initialTableContact) {
+    const table = scene.tables.find(
+      (candidate) => candidate.id === particle.initialTableContact?.tableId,
+    );
+    if (!table) return null;
+    const q = particle.initialTableContact.q;
+    if (q < -GEOMETRY_TOLERANCE || q > table.width + GEOMETRY_TOLERANCE) {
+      return null;
+    }
+    const contactPoint = pointAtTableCoordinate(table, q);
+    if (
+      Math.hypot(
+        particle.initialPosition.x - contactPoint.x,
+        particle.initialPosition.y - contactPoint.y,
+      ) > GEOMETRY_TOLERANCE
+    ) return null;
+    const nonContact = analyseNonContactForces(particle, scene.settings.gravity);
+    if (
+      particle.initialVelocity.y > MOTION_TOLERANCE ||
+      nonContact.resultant.y > FORCE_TOLERANCE
+    ) return null;
+    return {
+      support: {
+        kind: "table",
+        tableId: table.id,
+        tangent: { x: 1, y: 0 },
+        width: table.width,
+      },
+      q,
+      velocity: particle.initialVelocity.x,
+    };
+  }
+
   if (
     !scene.groundEnabled ||
     !nearlyEqual(particle.initialPosition.y, scene.groundHeight) ||
@@ -333,9 +508,12 @@ function sameSupport(
   first: SharedStringSupport,
   second: SharedStringSupport,
 ): boolean {
-  return first.kind === second.kind &&
-    (first.kind === "ground" ||
-      (second.kind === "incline" && first.inclineId === second.inclineId));
+  if (first.kind !== second.kind) return false;
+  if (first.kind === "ground") return true;
+  if (first.kind === "incline") {
+    return second.kind === "incline" && first.inclineId === second.inclineId;
+  }
+  return second.kind === "table" && first.tableId === second.tableId;
 }
 
 function pointLiesOnOpenSegment(point: Vec2, start: Vec2, end: Vec2): boolean {
@@ -404,6 +582,153 @@ function nearlyEqual(first: number, second: number): boolean {
 
 function geometryTolerance(...values: number[]): number {
   return GEOMETRY_TOLERANCE * Math.max(1, ...values.map(Math.abs));
+}
+
+interface CurrentPulleyLegGeometry {
+  fixedLength: number;
+  leftLength: number;
+  rightLength: number;
+}
+
+function currentPulleyLegGeometry(
+  scene: Scene,
+  string: InextensibleString,
+): CurrentPulleyLegGeometry | null {
+  if (string.route?.kind !== "pulley") return null;
+  const pulley = scene.pulleys.find(
+    (candidate) => candidate.id === string.route?.pulleyId,
+  );
+  const particleA = scene.particles.find(
+    (candidate) => candidate.id === string.particleAId,
+  );
+  const particleB = scene.particles.find(
+    (candidate) => candidate.id === string.particleBId,
+  );
+  if (!pulley || !particleA || !particleB) return null;
+  const route = getPulleyRouteGeometry(scene, pulley);
+  if (!route) return null;
+  return {
+    fixedLength: route.fixedLength,
+    leftLength: Math.hypot(
+      particleA.initialPosition.x - route.endpointATangent.x,
+      particleA.initialPosition.y - route.endpointATangent.y,
+    ),
+    rightLength: Math.hypot(
+      particleB.initialPosition.x - route.endpointBTangent.x,
+      particleB.initialPosition.y - route.endpointBTangent.y,
+    ),
+  };
+}
+
+function placePulleyEndpointAtLength(
+  scene: Scene,
+  particle: Particle,
+  path: PulleyEndpointPath,
+  length: number,
+): void {
+  if (path.kind === "hanging") {
+    placeHangingPulleyEndpoint(scene, particle, path.tangentPoint, length);
+    return;
+  }
+  const currentLength = endpointSegmentLength(path);
+  const requestedQ = path.q +
+    (length - currentLength) / path.stringLengthCoefficient;
+  const q = Math.max(path.minimumQ, Math.min(path.maximumQ, requestedQ));
+  particle.initialPosition = path.positionAt(q);
+  particle.initialInclineContact = path.kind === "incline"
+    ? { inclineId: path.supportId!, q }
+    : undefined;
+  particle.initialTableContact = path.kind === "table"
+    ? { tableId: path.supportId!, q }
+    : undefined;
+}
+
+interface HangingSurfaceContact {
+  y: number;
+  kind: "ground" | "table" | "incline";
+  supportId?: string;
+  q?: number;
+}
+
+function placeHangingPulleyEndpoint(
+  scene: Scene,
+  particle: Particle,
+  tangentPoint: Vec2,
+  length: number,
+): void {
+  const requestedY = tangentPoint.y - length;
+  const contacts: HangingSurfaceContact[] = [];
+  if (
+    scene.groundEnabled &&
+    surfaceBlocksVerticalLeg(scene.groundHeight, requestedY, tangentPoint.y)
+  ) {
+    contacts.push({ y: scene.groundHeight, kind: "ground" });
+  }
+  for (const table of scene.tables) {
+    const withinTable = tangentPoint.x >= table.topLeft.x - GEOMETRY_TOLERANCE &&
+      tangentPoint.x <= table.topLeft.x + table.width + GEOMETRY_TOLERANCE;
+    if (
+      withinTable &&
+      surfaceBlocksVerticalLeg(table.topLeft.y, requestedY, tangentPoint.y)
+    ) {
+      contacts.push({
+        y: table.topLeft.y,
+        kind: "table",
+        supportId: table.id,
+        q: Math.max(0, Math.min(table.width, tangentPoint.x - table.topLeft.x)),
+      });
+    }
+  }
+  for (const incline of scene.inclines) {
+    const geometry = getInclineGeometry(incline);
+    if (Math.abs(geometry.tangent.x) <= GEOMETRY_TOLERANCE) continue;
+    const q = (tangentPoint.x - geometry.lowerEndpoint.x) /
+      geometry.tangent.x;
+    if (q < -GEOMETRY_TOLERANCE || q > geometry.slopeLength + GEOMETRY_TOLERANCE) {
+      continue;
+    }
+    const clampedQ = Math.max(0, Math.min(geometry.slopeLength, q));
+    const y = geometry.lowerEndpoint.y + geometry.tangent.y * clampedQ;
+    if (surfaceBlocksVerticalLeg(y, requestedY, tangentPoint.y)) {
+      contacts.push({
+        y,
+        kind: "incline",
+        supportId: incline.id,
+        q: clampedQ,
+      });
+    }
+  }
+
+  const contact = contacts.sort((left, right) => {
+    const heightDifference = right.y - left.y;
+    if (Math.abs(heightDifference) > GEOMETRY_TOLERANCE) return heightDifference;
+    return surfaceContactPriority(right.kind) - surfaceContactPriority(left.kind);
+  })[0];
+  particle.initialPosition = {
+    x: tangentPoint.x,
+    y: contact?.y ?? requestedY,
+  };
+  particle.initialTableContact = contact?.kind === "table"
+    ? { tableId: contact.supportId!, q: contact.q! }
+    : undefined;
+  particle.initialInclineContact = contact?.kind === "incline"
+    ? { inclineId: contact.supportId!, q: contact.q! }
+    : undefined;
+}
+
+function surfaceBlocksVerticalLeg(
+  surfaceY: number,
+  requestedY: number,
+  tangentY: number,
+): boolean {
+  return surfaceY >= requestedY - GEOMETRY_TOLERANCE &&
+    surfaceY <= tangentY + GEOMETRY_TOLERANCE;
+}
+
+function surfaceContactPriority(
+  kind: HangingSurfaceContact["kind"],
+): number {
+  return kind === "ground" ? 0 : 1;
 }
 
 function rejection(

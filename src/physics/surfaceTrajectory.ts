@@ -8,13 +8,19 @@ import { analyseNonContactForces } from "../dynamics/forceAnalysis";
 import { solveFriction, type FrictionAnalysis } from "../dynamics/friction";
 import { calculateGroundImpactTimeWithAcceleration } from "../dynamics/groundContact";
 import {
+  analyseTableContactForces,
+  calculateTableEndpointTime,
+} from "../dynamics/tableContact";
+import {
   dot,
   getInclineGeometry,
   pointAtInclineCoordinate,
 } from "../geometry/inclineGeometry";
+import { getTableGeometry, pointAtTableCoordinate } from "../geometry/tableGeometry";
 import type { Vec2 } from "../math/Vec2";
 import type { Incline } from "../model/Incline";
 import type { Particle, ParticleState } from "../model/Particle";
+import type { Table } from "../model/Table";
 
 export interface SurfaceTrajectoryEnvironment {
   gravity: number;
@@ -23,10 +29,11 @@ export interface SurfaceTrajectoryEnvironment {
   groundRough?: boolean;
   groundFriction?: number;
   inclines?: readonly Incline[];
+  tables?: readonly Table[];
 }
 
 export interface SurfaceTrajectoryPhase {
-  kind: "free-flight" | "grounded" | "incline-contact";
+  kind: "free-flight" | "grounded" | "incline-contact" | "table-contact";
   startTime: number;
   initialPosition: Vec2;
   initialVelocity: Vec2;
@@ -37,6 +44,14 @@ export interface SurfaceTrajectoryPhase {
     initialTangentialVelocity: number;
     tangentialAcceleration: number;
     slopeLength: number;
+    endpointTime: number | null;
+  };
+  table?: {
+    tableId: string;
+    initialQ: number;
+    initialTangentialVelocity: number;
+    tangentialAcceleration: number;
+    width: number;
     endpointTime: number | null;
   };
 }
@@ -51,6 +66,15 @@ export type SurfaceTrajectoryContact =
   | {
       kind: "incline";
       inclineId: string;
+      q: number;
+      tangentialVelocity: number;
+      tangentialAcceleration: number;
+      normalReactionMagnitude: number;
+      friction: FrictionAnalysis;
+    }
+  | {
+      kind: "table";
+      tableId: string;
       q: number;
       tangentialVelocity: number;
       tangentialAcceleration: number;
@@ -86,14 +110,22 @@ type InternalPhase =
       startTime: number;
       particle: Particle;
       incline: Incline;
+    }
+  | {
+      kind: "table-contact";
+      startTime: number;
+      particle: Particle;
+      table: Table;
     };
 
 type PhaseEvent =
   | { kind: "ground-impact"; time: number }
   | { kind: "incline-impact"; time: number; incline: Incline; q: number }
+  | { kind: "table-impact"; time: number; table: Table; q: number }
   | { kind: "incline-end"; time: number; q: number }
+  | { kind: "table-end"; time: number; q: number }
   | { kind: "ground-to-incline"; time: number; incline: Incline }
-  | { kind: "surface-stop"; time: number; incline?: Incline };
+  | { kind: "surface-stop"; time: number; incline?: Incline; table?: Table };
 
 export function calculateSurfaceTrajectory(
   particle: Particle,
@@ -190,6 +222,26 @@ function createInitialPhase(
   particle: Particle,
   environment: SurfaceTrajectoryEnvironment,
 ): InternalPhase {
+  const table = particle.initialTableContact
+    ? environment.tables?.find(
+        (candidate) => candidate.id === particle.initialTableContact?.tableId,
+      )
+    : undefined;
+  if (table && particle.initialTableContact) {
+    const q = clamp(particle.initialTableContact.q, 0, table.width);
+    const position = pointAtTableCoordinate(table, q);
+    const analysis = analyseTableContactForces(
+      particle,
+      table,
+      0,
+      environment.gravity,
+    );
+    if (analysis.kind === "table-contact" || analysis.kind === "endpoint") {
+      return createTablePhase(particle, table, 0, position, particle.initialVelocity, q);
+    }
+    return createFreePhase(particle, 0, position, particle.initialVelocity);
+  }
+
   const incline = particle.initialInclineContact
     ? environment.inclines?.find(
         (candidate) => candidate.id === particle.initialInclineContact?.inclineId,
@@ -260,6 +312,43 @@ function findNextEvent(
         maximumTime,
       ),
     ].filter((event): event is PhaseEvent => event !== null));
+  }
+
+  if (phase.kind === "table-contact") {
+    const analysis = analyseTableContactForces(
+      phase.particle,
+      phase.table,
+      0,
+      environment.gravity,
+    );
+    const contact = phase.particle.initialTableContact;
+    if (!contact || analysis.kind === "lift-off") return null;
+    const endpointTime = calculateTableEndpointTime(
+      contact.q,
+      phase.particle.initialVelocity.x,
+      analysis.tangentialAcceleration,
+      phase.table.width,
+    );
+    const events: PhaseEvent[] = [];
+    if (endpointTime !== null && endpointTime <= maximumTime + EVENT_TOLERANCE) {
+      const endpointPosition = contact.q +
+        phase.particle.initialVelocity.x * endpointTime +
+        0.5 * analysis.tangentialAcceleration * endpointTime ** 2;
+      events.push({
+        kind: "table-end",
+        time: endpointTime,
+        q: endpointPosition <= phase.table.width / 2 ? 0 : phase.table.width,
+      });
+    }
+    const stop = createStoppingEvent(
+      phase.particle.initialVelocity.x,
+      analysis.tangentialAcceleration,
+      maximumTime,
+      undefined,
+      phase.table,
+    );
+    if (stop) events.push(stop);
+    return earliestEvent(events);
   }
 
   const geometry = getInclineGeometry(phase.incline);
@@ -335,7 +424,52 @@ function findNextFreeFlightEvent(
     );
     if (collision) events.push(collision);
   }
+  for (const table of environment.tables ?? []) {
+    const collision = findFreeFlightTableCollision(
+      phase.particle.initialPosition,
+      phase.particle.initialVelocity,
+      acceleration,
+      table,
+      maximumTime,
+    );
+    if (collision) events.push(collision);
+  }
   return earliestEvent(events);
+}
+
+function findFreeFlightTableCollision(
+  position: Vec2,
+  velocity: Vec2,
+  acceleration: Vec2,
+  table: Table,
+  maximumTime: number,
+): Extract<PhaseEvent, { kind: "table-impact" }> | null {
+  const geometry = getTableGeometry(table);
+  for (const candidate of solveQuadratic(
+    0.5 * acceleration.y,
+    velocity.y,
+    position.y - geometry.topLeft.y,
+  )) {
+    if (
+      candidate <= EVENT_TOLERANCE ||
+      candidate > maximumTime + EVENT_TOLERANCE
+    ) {
+      continue;
+    }
+    const verticalVelocity = velocity.y + acceleration.y * candidate;
+    if (verticalVelocity >= -CONTACT_TOLERANCE) continue;
+    const x = position.x + velocity.x * candidate +
+      0.5 * acceleration.x * candidate ** 2;
+    const q = x - geometry.topLeft.x;
+    if (q < -CONTACT_TOLERANCE || q > table.width + CONTACT_TOLERANCE) continue;
+    return {
+      kind: "table-impact",
+      time: candidate,
+      table,
+      q: clamp(q, 0, table.width),
+    };
+  }
+  return null;
 }
 
 function findFreeFlightInclineCollision(
@@ -446,6 +580,21 @@ function transitionAtEvent(
         clamp(q, 0, geometry.slopeLength),
       );
     }
+    if (event.table) {
+      const q = clamp(
+        eventState.position.x - event.table.topLeft.x,
+        0,
+        event.table.width,
+      );
+      return createTablePhase(
+        sourceParticle,
+        event.table,
+        eventTime,
+        pointAtTableCoordinate(event.table, q),
+        { x: 0, y: 0 },
+        q,
+      );
+    }
     return createGroundPhase(
       sourceParticle,
       eventTime,
@@ -454,6 +603,26 @@ function transitionAtEvent(
         y: environment.groundHeight ?? GROUND_HEIGHT,
       },
       { x: 0, y: 0 },
+    );
+  }
+
+  if (event.kind === "table-impact") {
+    const position = pointAtTableCoordinate(event.table, event.q);
+    const projectedVelocity = { x: eventState.velocity.x, y: 0 };
+    const movingOutOfFiniteSurface =
+      event.q <= CONTACT_TOLERANCE && projectedVelocity.x < -CONTACT_TOLERANCE ||
+      event.q >= event.table.width - CONTACT_TOLERANCE &&
+        projectedVelocity.x > CONTACT_TOLERANCE;
+    if (nonContact.resultant.y > CONTACT_TOLERANCE || movingOutOfFiniteSurface) {
+      return createFreePhase(sourceParticle, eventTime, position, projectedVelocity);
+    }
+    return createTablePhase(
+      sourceParticle,
+      event.table,
+      eventTime,
+      position,
+      projectedVelocity,
+      event.q,
     );
   }
 
@@ -484,6 +653,15 @@ function transitionAtEvent(
       position,
       projectedVelocity,
       q,
+    );
+  }
+
+  if (event.kind === "table-end") {
+    return createFreePhase(
+      sourceParticle,
+      eventTime,
+      eventState.position,
+      eventState.velocity,
     );
   }
 
@@ -518,6 +696,8 @@ function evaluatePhaseAtEvent(
     result.state.position.y = environment.groundHeight ?? GROUND_HEIGHT;
   } else if (event.kind === "incline-impact") {
     result.state.position = pointAtInclineCoordinate(event.incline, event.q);
+  } else if (event.kind === "table-impact") {
+    result.state.position = pointAtTableCoordinate(event.table, event.q);
   } else if (event.kind === "ground-to-incline") {
     result.state.position = { ...getInclineGeometry(event.incline).lowerEndpoint };
   }
@@ -574,6 +754,50 @@ function evaluatePhase(
         acceleration,
       },
       contact: { kind: "ground", normalReactionMagnitude, friction },
+    };
+  }
+
+  if (phase.kind === "table-contact") {
+    const analysis = analyseTableContactForces(
+      phase.particle,
+      phase.table,
+      safeElapsed,
+      environment.gravity,
+    );
+    const initialQ = phase.particle.initialTableContact?.q ?? 0;
+    return {
+      state: {
+        id: phase.particle.id,
+        position: pointAtTableCoordinate(phase.table, analysis.q),
+        velocity: { x: analysis.tangentialVelocity, y: 0 },
+        acceleration: { x: analysis.tangentialAcceleration, y: 0 },
+      },
+      phase: {
+        kind: "table-contact",
+        startTime: phase.startTime,
+        initialPosition: pointAtTableCoordinate(phase.table, initialQ),
+        initialVelocity: { x: phase.particle.initialVelocity.x, y: 0 },
+        acceleration: { x: analysis.tangentialAcceleration, y: 0 },
+        table: {
+          tableId: phase.table.id,
+          initialQ,
+          initialTangentialVelocity: phase.particle.initialVelocity.x,
+          tangentialAcceleration: analysis.tangentialAcceleration,
+          width: phase.table.width,
+          endpointTime: analysis.endpointTime === null
+            ? null
+            : phase.startTime + analysis.endpointTime,
+        },
+      },
+      contact: {
+        kind: "table",
+        tableId: phase.table.id,
+        q: analysis.q,
+        tangentialVelocity: analysis.tangentialVelocity,
+        tangentialAcceleration: analysis.tangentialAcceleration,
+        normalReactionMagnitude: analysis.normalReactionMagnitude,
+        friction: analysis.friction,
+      },
     };
   }
 
@@ -665,6 +889,19 @@ function createInclinePhase(
   return { kind: "incline-contact", startTime, particle, incline };
 }
 
+function createTablePhase(
+  source: Particle,
+  table: Table,
+  startTime: number,
+  position: Vec2,
+  velocity: Vec2,
+  q: number,
+): Extract<InternalPhase, { kind: "table-contact" }> {
+  const particle = phaseParticle(source, position, velocity);
+  particle.initialTableContact = { tableId: table.id, q };
+  return { kind: "table-contact", startTime, particle, table };
+}
+
 function phaseParticle(
   source: Particle,
   position: Vec2,
@@ -675,6 +912,7 @@ function phaseParticle(
     initialPosition: { ...position },
     initialVelocity: { ...velocity },
     initialInclineContact: undefined,
+    initialTableContact: undefined,
   };
 }
 
@@ -687,7 +925,8 @@ function earliestEvent(events: PhaseEvent[]): PhaseEvent | null {
 }
 
 function eventPriority(event: PhaseEvent): number {
-  if (event.kind === "ground-impact") return 0;
+  if (event.kind === "table-impact" || event.kind === "incline-impact") return 0;
+  if (event.kind === "ground-impact") return 1;
   if (event.kind === "surface-stop") return 1;
   return 2;
 }
@@ -726,6 +965,7 @@ function createStoppingEvent(
   acceleration: number,
   maximumTime: number,
   incline?: Incline,
+  table?: Table,
 ): Extract<PhaseEvent, { kind: "surface-stop" }> | null {
   if (
     Math.abs(velocity) <= CONTACT_TOLERANCE ||
@@ -735,7 +975,7 @@ function createStoppingEvent(
   }
   const time = -velocity / acceleration;
   return time > EVENT_TOLERANCE && time <= maximumTime + EVENT_TOLERANCE
-    ? { kind: "surface-stop", time, incline }
+    ? { kind: "surface-stop", time, incline, table }
     : null;
 }
 

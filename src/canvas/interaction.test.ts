@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   calculateInclineDragPreviewGeometry,
+  constrainTablePositionAboveGround,
   getParticleDragPreviewClassName,
+  shouldSnapParticleToGridOnRelease,
 } from "./interaction";
+import { addPulleyApparatus } from "../model/pulleyScene";
+import { createScene } from "../model/Scene";
 
 describe("particle drag preview", () => {
   it("preserves the particle's selected shape", () => {
@@ -12,6 +16,39 @@ describe("particle drag preview", () => {
     expect(getParticleDragPreviewClassName("square")).toBe(
       "particle-drag-preview is-square",
     );
+  });
+
+  it("snaps every Particle only when its drag is released", () => {
+    const scene = createScene();
+    const apparatus = addPulleyApparatus(scene, {
+      pulleyId: "pulley",
+      stringId: "string",
+      particleAId: "a",
+      particleBId: "b",
+    }, { x: 0, y: 8 })!;
+
+    expect(shouldSnapParticleToGridOnRelease(
+      scene,
+      apparatus.particleA.id,
+    )).toBe(true);
+    expect(shouldSnapParticleToGridOnRelease(scene, "unconnected")).toBe(true);
+  });
+});
+
+describe("Table placement", () => {
+  it("keeps the entire Table body above enabled Ground", () => {
+    expect(constrainTablePositionAboveGround(
+      { x: 3, y: 1 },
+      5,
+      true,
+      0,
+    )).toEqual({ x: 3, y: 5 });
+    expect(constrainTablePositionAboveGround(
+      { x: 3, y: -4 },
+      5,
+      false,
+      0,
+    )).toEqual({ x: 3, y: -4 });
   });
 });
 

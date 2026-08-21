@@ -14,11 +14,16 @@ export interface PlaybackAdvance {
 export interface GreatestHeightPauseEvent {
   time: number;
   particleIds: string[];
+  inclineDistances?: Record<string, {
+    referencePosition: { x: number; y: number };
+    distance: number;
+  }>;
 }
 
 export interface GroundContactPauseEvent {
   time: number;
   particleIds: string[];
+  contacts?: Record<string, "ground" | "table">;
 }
 
 export type StepDirection = "previous" | "next";

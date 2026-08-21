@@ -22,6 +22,7 @@ import {
   MINIMUM_INCLINE_HORIZONTAL_LENGTH,
   type InclineDirection,
 } from "../model/Incline";
+import { MINIMUM_TABLE_SIZE } from "../model/Table";
 import type { ParticleForceDisplay } from "../dynamics/forceDisplay";
 import type { InclineForceResolutionDisplay } from "../dynamics/inclineForceDisplay";
 import type {
@@ -33,15 +34,14 @@ import {
 } from "../simulation/autoPauseTimeDisplay";
 import {
   createBreakableMathExpression,
-  createMathExpression,
   createForceAccelerationExpression,
   createForceResolutionExpression,
   createMathResult,
-  createQuadraticSurdValue,
-  createRationalSurdValue,
-  createSquareRootExpression,
-  createSquareRootValue,
 } from "./mathMarkup";
+import {
+  createCanvasMathValueElement,
+  createMathExpression,
+} from "./canvasMathOverlay";
 import {
   formatExactValueTooltip,
   getExactValueTooltip,
@@ -146,6 +146,15 @@ export type SelectionProperties =
       frictionInput: string;
     }
   | {
+      type: "table";
+      position: Vec2;
+      widthInput: string;
+      heightInput: string;
+      rough: boolean;
+      friction: number;
+      frictionInput: string;
+    }
+  | {
       type: "string";
       particleA: { id: string; name: string; mass: number };
       particleB: { id: string; name: string; mass: number };
@@ -154,6 +163,12 @@ export type SelectionProperties =
       lengthText: string;
       display: ConnectedSystemDisplay;
       boundaryMessage: string | null;
+      pulley: {
+        leftLength: number;
+        leftLengthText: string;
+        rightLength: number;
+        rightLengthText: string;
+      } | null;
     }
   | null;
 
@@ -201,6 +216,11 @@ export interface ControlCallbacks {
   ) => void;
   onConnectWithString: () => void;
   onStringLengthChange: (length: number, enteredText: string) => boolean;
+  onPulleyStringLegLengthChange: (
+    leg: "left" | "right",
+    length: number,
+    enteredText: string,
+  ) => boolean;
   onPositiveXChange: (direction: HorizontalPositiveDirection) => void;
   onPositiveYChange: (direction: VerticalPositiveDirection) => void;
   onAngleConventionChange: (
@@ -214,6 +234,10 @@ export interface ControlCallbacks {
   onInclineDirectionChange: (direction: InclineDirection) => void;
   onInclineRoughChange: (rough: boolean) => void;
   onInclineFrictionChange: (coefficient: number, enteredText: string) => void;
+  onTableWidthChange: (width: number, enteredText: string) => void;
+  onTableHeightChange: (height: number, enteredText: string) => void;
+  onTableRoughChange: (rough: boolean) => void;
+  onTableFrictionChange: (coefficient: number, enteredText: string) => void;
   onClearScene: () => void;
   onTimeChange: (time: number, enteredText: string) => void;
   onPrevious: (interval: number) => void;
@@ -230,6 +254,8 @@ export interface Controls {
   deleteTarget: HTMLButtonElement;
   particleSource: HTMLButtonElement;
   inclineSource: HTMLButtonElement;
+  tableSource: HTMLButtonElement;
+  pulleySource: HTMLButtonElement;
   setTool: (tool: Tool) => void;
   setSelected: (hasSelection: boolean) => void;
   setSelectionProperties: (selection: SelectionProperties) => void;
@@ -253,6 +279,8 @@ export function createControls(callbacks: ControlCallbacks): Controls {
   const canvasMathOverlay = getElement<HTMLElement>("canvas-math-overlay");
   const particleTool = getElement<HTMLButtonElement>("particle-tool");
   const inclineTool = getElement<HTMLButtonElement>("incline-tool");
+  const tableTool = getElement<HTMLButtonElement>("table-tool");
+  const pulleyTool = getElement<HTMLButtonElement>("pulley-tool");
   const removeParticle = getElement<HTMLButtonElement>("remove-particle");
   const groundToggle = getElement<HTMLInputElement>("ground-toggle");
   const showForceArrowsToggle = getElement<HTMLInputElement>(
@@ -297,13 +325,37 @@ export function createControls(callbacks: ControlCallbacks): Controls {
   const connectedSystemProperties = getElement<HTMLElement>(
     "connected-system-properties",
   );
+  const tableProperties = getElement<HTMLElement>("table-properties");
+  const tablePositionX = getElement<HTMLOutputElement>("table-position-x");
+  const tablePositionY = getElement<HTMLOutputElement>("table-position-y");
+  const tableWidthInput = getElement<HTMLInputElement>("table-width-input");
+  const tableHeightInput = getElement<HTMLInputElement>("table-height-input");
+  const tableRoughToggle = getElement<HTMLInputElement>("table-rough-toggle");
+  const tableFrictionControl = getElement<HTMLElement>("table-friction-control");
+  const tableFrictionInput = getElement<HTMLInputElement>("table-friction-input");
   const connectedParticleA = getElement<HTMLOutputElement>("connected-particle-a");
   const connectedParticleB = getElement<HTMLOutputElement>("connected-particle-b");
   const connectedStringState = getElement<HTMLOutputElement>("connected-string-state");
+  const connectedLengthRow = getElement<HTMLElement>("connected-length-row");
   const connectedLengthInput = getElement<HTMLInputElement>(
     "connected-length-input",
   );
   const connectedLengthError = getElement<HTMLElement>("connected-length-error");
+  const connectedPulleyLengthControls = getElement<HTMLElement>(
+    "connected-pulley-length-controls",
+  );
+  const connectedLeftLengthInput = getElement<HTMLInputElement>(
+    "connected-left-length-input",
+  );
+  const connectedLeftLengthError = getElement<HTMLElement>(
+    "connected-left-length-error",
+  );
+  const connectedRightLengthInput = getElement<HTMLInputElement>(
+    "connected-right-length-input",
+  );
+  const connectedRightLengthError = getElement<HTMLElement>(
+    "connected-right-length-error",
+  );
   const connectedCommonAccelerationRow = getElement<HTMLElement>(
     "connected-common-acceleration-row",
   );
@@ -632,6 +684,8 @@ export function createControls(callbacks: ControlCallbacks): Controls {
   let currentParticlePauseTargetText = particlePauseTargetInput.value;
   let currentGroundFriction = Number(groundFrictionInput.value);
   let currentStringLengthText = connectedLengthInput.value;
+  let currentPulleyLeftLengthText = connectedLeftLengthInput.value;
+  let currentPulleyRightLengthText = connectedRightLengthInput.value;
   let currentTool: Tool = "select";
   let selectedParticleTab: ParticlePropertiesTab = "general";
   const particleTabScrollPositions: Record<ParticlePropertiesTab, number> = {
@@ -772,6 +826,54 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     currentStringLengthText = enteredText;
     connectedLengthInput.removeAttribute("aria-invalid");
     connectedLengthError.textContent = "";
+  });
+
+  const commitPulleyLegLength = (
+    leg: "left" | "right",
+    input: HTMLInputElement,
+    error: HTMLElement,
+    previousText: string,
+    setCurrentText: (value: string) => void,
+  ): void => {
+    const enteredText = input.value.trim();
+    const length = parseNonNegativeProperty(enteredText);
+    if (length === null) {
+      input.value = previousText;
+      input.setAttribute("aria-invalid", "true");
+      error.textContent = "Enter a non-negative value with up to 3 decimal places.";
+      return;
+    }
+    if (!callbacks.onPulleyStringLegLengthChange(leg, length, enteredText)) {
+      input.value = previousText;
+      input.setAttribute("aria-invalid", "true");
+      error.textContent = "That length cannot be used with the current Pulley route.";
+      return;
+    }
+    setCurrentText(enteredText);
+    input.removeAttribute("aria-invalid");
+    error.textContent = "";
+  };
+  connectedLeftLengthInput.addEventListener("change", () => {
+    commitPulleyLegLength(
+      "left",
+      connectedLeftLengthInput,
+      connectedLeftLengthError,
+      currentPulleyLeftLengthText,
+      (value) => {
+        currentPulleyLeftLengthText = value;
+      },
+    );
+  });
+  connectedRightLengthInput.addEventListener("change", () => {
+    commitPulleyLegLength(
+      "right",
+      connectedRightLengthInput,
+      connectedRightLengthError,
+      currentPulleyRightLengthText,
+      (value) => {
+        currentPulleyRightLengthText = value;
+      },
+    );
   });
 
   const renderSelectedKinematicComponent = (): void => {
@@ -1243,11 +1345,20 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     currentTool = tool;
     const particleActive = tool === "particle";
     const inclineActive = tool === "incline";
+    const tableActive = tool === "table";
+    const pulleyActive = tool === "pulley";
     particleTool.classList.toggle("is-active", particleActive);
     particleTool.setAttribute("aria-pressed", String(particleActive));
     inclineTool.classList.toggle("is-active", inclineActive);
     inclineTool.setAttribute("aria-pressed", String(inclineActive));
-    canvas.classList.toggle("is-placing", particleActive || inclineActive);
+    tableTool.classList.toggle("is-active", tableActive);
+    tableTool.setAttribute("aria-pressed", String(tableActive));
+    pulleyTool.classList.toggle("is-active", pulleyActive);
+    pulleyTool.setAttribute("aria-pressed", String(pulleyActive));
+    canvas.classList.toggle(
+      "is-placing",
+      particleActive || inclineActive || tableActive || pulleyActive,
+    );
   };
 
   particleTool.addEventListener("click", () => {
@@ -1258,6 +1369,18 @@ export function createControls(callbacks: ControlCallbacks): Controls {
 
   inclineTool.addEventListener("click", () => {
     const nextTool = currentTool === "incline" ? "select" : "incline";
+    setTool(nextTool);
+    callbacks.onToolChange(nextTool);
+  });
+
+  tableTool.addEventListener("click", () => {
+    const nextTool = currentTool === "table" ? "select" : "table";
+    setTool(nextTool);
+    callbacks.onToolChange(nextTool);
+  });
+
+  pulleyTool.addEventListener("click", () => {
+    const nextTool = currentTool === "pulley" ? "select" : "pulley";
     setTool(nextTool);
     callbacks.onToolChange(nextTool);
   });
@@ -1297,6 +1420,36 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     }
     inclineFrictionInput.removeAttribute("aria-invalid");
     callbacks.onInclineFrictionChange(value, inclineFrictionInput.value.trim());
+  });
+  tableWidthInput.addEventListener("change", () => {
+    const value = parsePositiveProperty(tableWidthInput.value);
+    if (value === null || value < MINIMUM_TABLE_SIZE) {
+      tableWidthInput.setAttribute("aria-invalid", "true");
+      return;
+    }
+    tableWidthInput.removeAttribute("aria-invalid");
+    callbacks.onTableWidthChange(value, tableWidthInput.value.trim());
+  });
+  tableHeightInput.addEventListener("change", () => {
+    const value = parsePositiveProperty(tableHeightInput.value);
+    if (value === null || value < MINIMUM_TABLE_SIZE) {
+      tableHeightInput.setAttribute("aria-invalid", "true");
+      return;
+    }
+    tableHeightInput.removeAttribute("aria-invalid");
+    callbacks.onTableHeightChange(value, tableHeightInput.value.trim());
+  });
+  tableRoughToggle.addEventListener("change", () =>
+    callbacks.onTableRoughChange(tableRoughToggle.checked)
+  );
+  tableFrictionInput.addEventListener("change", () => {
+    const value = parseGravity(tableFrictionInput.value);
+    if (value === null) {
+      tableFrictionInput.setAttribute("aria-invalid", "true");
+      return;
+    }
+    tableFrictionInput.removeAttribute("aria-invalid");
+    callbacks.onTableFrictionChange(value, tableFrictionInput.value.trim());
   });
 
   removeParticle.addEventListener("click", callbacks.onRemove);
@@ -2002,6 +2155,8 @@ export function createControls(callbacks: ControlCallbacks): Controls {
     deleteTarget: removeParticle,
     particleSource: particleTool,
     inclineSource: inclineTool,
+    tableSource: tableTool,
+    pulleySource: pulleyTool,
     setTool,
     setSelected: (hasSelection) => {
       removeParticle.disabled = !hasSelection;
@@ -2019,6 +2174,10 @@ export function createControls(callbacks: ControlCallbacks): Controls {
       inclineProperties.classList.toggle(
         "is-hidden",
         selection?.type !== "incline",
+      );
+      tableProperties.classList.toggle(
+        "is-hidden",
+        selection?.type !== "table",
       );
       connectedSystemProperties.classList.toggle(
         "is-hidden",
@@ -2152,6 +2311,22 @@ export function createControls(callbacks: ControlCallbacks): Controls {
         inclineFrictionInput.disabled = !selection.rough;
         inclineFrictionInput.value = selection.frictionInput;
         inclineFrictionInput.removeAttribute("aria-invalid");
+      } else if (selection?.type === "table") {
+        if (motionGraphDialog.open) motionGraphDialog.close();
+        currentParticleSelection = null;
+        currentSuvatEquations = [];
+        closeExpandedSuvatEquation();
+        tablePositionX.textContent = formatNumber(selection.position.x);
+        tablePositionY.textContent = formatNumber(selection.position.y);
+        tableWidthInput.value = selection.widthInput;
+        tableHeightInput.value = selection.heightInput;
+        tableWidthInput.removeAttribute("aria-invalid");
+        tableHeightInput.removeAttribute("aria-invalid");
+        tableRoughToggle.checked = selection.rough;
+        tableFrictionControl.classList.toggle("is-hidden", !selection.rough);
+        tableFrictionInput.disabled = !selection.rough;
+        tableFrictionInput.value = selection.frictionInput;
+        tableFrictionInput.removeAttribute("aria-invalid");
       } else if (selection?.type === "string") {
         if (motionGraphDialog.open) motionGraphDialog.close();
         currentParticleSelection = null;
@@ -2160,16 +2335,35 @@ export function createControls(callbacks: ControlCallbacks): Controls {
         connectedParticleA.textContent = `${selection.particleA.name}, ${formatNumber(selection.particleA.mass)} kg`;
         connectedParticleB.textContent = `${selection.particleB.name}, ${formatNumber(selection.particleB.mass)} kg`;
         connectedStringState.textContent = selection.state === "taut" ? "Taut" : "Slack";
+        connectedLengthRow.hidden = selection.pulley !== null;
+        connectedLengthError.hidden = selection.pulley !== null;
+        connectedPulleyLengthControls.hidden = selection.pulley === null;
         currentStringLengthText = selection.lengthText;
         if (document.activeElement !== connectedLengthInput) {
           connectedLengthInput.value = selection.lengthText;
         }
         connectedLengthInput.removeAttribute("aria-invalid");
         connectedLengthError.textContent = "";
+        if (selection.pulley) {
+          currentPulleyLeftLengthText = selection.pulley.leftLengthText;
+          currentPulleyRightLengthText = selection.pulley.rightLengthText;
+          if (document.activeElement !== connectedLeftLengthInput) {
+            connectedLeftLengthInput.value = selection.pulley.leftLengthText;
+          }
+          if (document.activeElement !== connectedRightLengthInput) {
+            connectedRightLengthInput.value = selection.pulley.rightLengthText;
+          }
+        }
+        connectedLeftLengthInput.removeAttribute("aria-invalid");
+        connectedRightLengthInput.removeAttribute("aria-invalid");
+        connectedLeftLengthError.textContent = "";
+        connectedRightLengthError.textContent = "";
         const display = selection.display;
         const independentlyMoving = display.commonAcceleration === null;
         connectedCommonAccelerationRow.hidden = independentlyMoving;
         connectedSlackNote.hidden = selection.state !== "slack";
+        connectedSlackNote.textContent =
+          "Particles move independently while the string is slack.";
         connectedForceResolutionSection.hidden = independentlyMoving;
         connectedFmaSection.hidden = independentlyMoving;
         if (display.commonAcceleration === null) {
@@ -2298,26 +2492,15 @@ function setForceDirectionArrow(element: HTMLElement, vector: Vec2): void {
 
 function createAutoPauseTimeValue(value: AutoPauseTimeDisplay): Element {
   if (typeof value === "string") return createMathExpression(value);
-  if (value.kind === "square-root") {
-    return createSquareRootValue(value.radicand, value.negative);
-  }
-  if (value.kind === "rational-surd") {
-    return createRationalSurdValue(
-      value.numeratorCoefficient,
-      value.radicand,
-      value.denominator,
-    );
-  }
   if (value.kind === "rational-trig") {
     return createMathExpression(
       formatAutoPauseTimeExactText(value),
     );
   }
-  return createQuadraticSurdValue(
-    value.linearTerm,
-    value.radicand,
-    value.denominator,
-    value.radicalSign,
+  const exactText = formatAutoPauseTimeExactText(value);
+  return createCanvasMathValueElement(
+    exactText,
+    exactText,
   );
 }
 
@@ -2455,7 +2638,10 @@ function setKinematicOutputs(
     if (typeof value !== "string") {
       output.classList.add("has-square-root");
       output.replaceChildren(
-        createSquareRootValue(value.radicand, value.negative),
+        createCanvasMathValueElement(
+          value,
+          `${value.negative ? "negative " : ""}the square root of ${value.radicand}`,
+        ),
       );
       continue;
     }
@@ -2477,8 +2663,7 @@ function createConnectedSystemForceResolution(
   display: ConnectedSystemDisplay,
 ): HTMLElement {
   const terms = formatSignedTerms([
-    ...display.endpointA.externalForces,
-    ...display.endpointB.externalForces,
+    ...display.systemForces,
   ]
       .filter((force) => Math.abs(force.value) > 1e-12)
       .map(formatWorkingValue));
@@ -2701,11 +2886,14 @@ function populateSuvatEquationElement(
   if (squareRootWorking) {
     const expression = document.createElement("span");
     expression.className = "suvat-math-line";
+    const sign = squareRootWorking.sign === "both"
+      ? "±"
+      : squareRootWorking.sign === "negative"
+        ? "−"
+        : "";
+    const exactText = `v = ${sign}√(${squareRootWorking.radicand})`;
     expression.append(
-      createSquareRootExpression(
-        squareRootWorking.radicand,
-        squareRootWorking.sign,
-      ),
+      createCanvasMathValueElement(exactText, exactText),
     );
     const valueLines = squareRootWorking.finalValues.map((finalValue) => {
       const line = document.createElement("span");

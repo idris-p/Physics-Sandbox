@@ -1,11 +1,24 @@
 import {
+  canPlaceIncline,
   getInclineGeometry,
+  getInclineTriangleVertices,
   pointAtInclineCoordinate,
   projectPointOntoIncline,
 } from "../geometry/inclineGeometry";
+import {
+  doConvexPolygonsOverlap,
+  doesCircleOverlapConvexPolygon,
+  doesSegmentOverlapConvexPolygonInterior,
+} from "../geometry/convexOverlap";
+import { doesParticleFootprintOverlapConvexPolygon } from "../geometry/particleFootprint";
+import { getTableGeometry } from "../geometry/tableGeometry";
+import { getMountedPulleyCentre } from "../geometry/pulleyGeometry";
 import type { Vec2 } from "../math/Vec2";
 import type { Incline } from "../model/Incline";
 import type { Particle } from "../model/Particle";
+import { PULLEY_RADIUS_METRES } from "../model/Pulley";
+import type { Scene } from "../model/Scene";
+import { getStringPath } from "./tableSetup";
 
 export interface InclineSnap {
   incline: Incline;
@@ -166,6 +179,77 @@ export function placeParticlesOnInclineSurface(
     placedParticleIds.push(particle.id);
   }
   return placedParticleIds;
+}
+
+export function canPlaceInclineInScene(
+  candidate: Incline,
+  scene: Pick<Scene, "particles" | "inclines" | "pulleys" | "strings" | "tables">,
+): boolean {
+  if (!canPlaceIncline(candidate, scene.inclines)) return false;
+
+  const vertices = getInclineTriangleVertices(candidate);
+  if (scene.tables.some((table) => {
+    const geometry = getTableGeometry(table);
+    return doConvexPolygonsOverlap(vertices, [
+      geometry.topLeft,
+      geometry.topRight,
+      geometry.bottomRight,
+      geometry.bottomLeft,
+    ]);
+  })) return false;
+
+  const ignoredPulleyIds = new Set<string>();
+  const ignoredStringIds = new Set<string>();
+  const ignoredPulleyParticleIds = new Set<string>();
+  const pulleyParticleIds = new Set(
+    scene.pulleys.flatMap((pulley) => pulley.generatedParticleIds),
+  );
+  for (const pulley of scene.pulleys) {
+    if (
+      pulley.mount.kind !== "incline-end" ||
+      pulley.mount.inclineId !== candidate.id
+    ) continue;
+    ignoredPulleyIds.add(pulley.id);
+    ignoredStringIds.add(pulley.stringId);
+    for (const particleId of pulley.generatedParticleIds) {
+      ignoredPulleyParticleIds.add(particleId);
+    }
+  }
+
+  if (scene.particles.some((particle) =>
+    pulleyParticleIds.has(particle.id) &&
+    !ignoredPulleyParticleIds.has(particle.id) &&
+    doesParticleFootprintOverlapConvexPolygon(
+      particle,
+      scene.inclines,
+      vertices,
+    )
+  )) return false;
+
+  if (scene.pulleys.some((pulley) => {
+    if (ignoredPulleyIds.has(pulley.id)) return false;
+    const centre = getMountedPulleyCentre(scene, pulley.mount, pulley.centre);
+    return centre
+      ? doesCircleOverlapConvexPolygon(
+          centre,
+          PULLEY_RADIUS_METRES,
+          vertices,
+        )
+      : false;
+  })) return false;
+
+  return scene.strings.every((string) => {
+    if (ignoredStringIds.has(string.id)) return true;
+    const path = getStringPath(scene, string);
+    if (!path) return true;
+    return !path.slice(1).some((end, index) =>
+      doesSegmentOverlapConvexPolygonInterior(
+        path[index],
+        end,
+        vertices,
+      )
+    );
+  });
 }
 
 const PLACEMENT_TOLERANCE = 1e-10;

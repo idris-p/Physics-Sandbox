@@ -1,10 +1,14 @@
 import type { ScreenPoint } from "../math/Vec2";
 import type { Incline } from "../model/Incline";
-import type { ParticleShape, ParticleState } from "../model/Particle";
+import {
+  PARTICLE_DIAMETER_METRES,
+  type ParticleShape,
+  type ParticleState,
+} from "../model/Particle";
 import { getInclineGeometry } from "../geometry/inclineGeometry";
 import type { Camera } from "./camera";
 
-export const PARTICLE_DIAMETER_METRES = 1;
+export { PARTICLE_DIAMETER_METRES } from "../model/Particle";
 
 export interface RenderedParticleGeometry {
   centre: ScreenPoint;

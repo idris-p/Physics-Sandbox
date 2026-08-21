@@ -1,11 +1,17 @@
 import type { ParticleState } from "../model/Particle";
 import type { Scene } from "../model/Scene";
 import { createIncline, type Incline } from "../model/Incline";
+import { createTable } from "../model/Table";
 import type { ScreenPoint, Vec2 } from "../math/Vec2";
 import {
   calculateGreatestHeightHorizontalGeometry,
+  GREATEST_HEIGHT_ARROW_OFFSET_METRES,
   type GreatestHeightMeasurement,
 } from "./greatestHeightAnnotation";
+import {
+  calculateRangeVerticalGeometry,
+  type RangeMeasurement,
+} from "./rangeAnnotation";
 import { worldToScreen, type Camera } from "./camera";
 import { renderGrid } from "./grid";
 import {
@@ -23,6 +29,7 @@ import {
   groupParticlesByPosition,
   getRenderedParticleGeometry,
   getRenderedParticleShapeGeometry,
+  PARTICLE_DIAMETER_METRES,
 } from "./particleGeometry";
 import {
   getSelectionWhiteMix,
@@ -52,9 +59,14 @@ import { createFrictionDisplay } from "../dynamics/frictionDisplay";
 import {
   getInclineGeometry,
   isPointOnInclineSegment,
+  pointAtInclineCoordinate,
+  projectPointOntoIncline,
 } from "../geometry/inclineGeometry";
 import type { PlacementPreview } from "./placementPreview";
-import { getStringRenderSegment } from "./stringGeometry";
+import {
+  getStringRenderSegment,
+  STRING_OFFSET_RADIUS_RATIO,
+} from "./stringGeometry";
 import type { TensionDisplayInput } from "../dynamics/forceDisplay";
 import { calculateConnectedSystemTrajectory } from "../physics/connectedTrajectory";
 import { calculateSurfaceTrajectory } from "../physics/surfaceTrajectory";
@@ -63,6 +75,22 @@ import {
   calculateInclineLengthControlGeometry,
   type InclineLengthControlGeometry,
 } from "./inclineLengthControl";
+import {
+  getTableGeometry,
+  isPointOnTableTop,
+  pointAtTableCoordinate,
+} from "../geometry/tableGeometry";
+import { getMountedPulleyCentre } from "../geometry/pulleyGeometry";
+import { PULLEY_RADIUS_METRES } from "../model/Pulley";
+import {
+  getPulleyApparatusPlacementPreview,
+  rebuildMountedPulleyApparatus,
+} from "../model/pulleyScene";
+import { analyseTableContactForces } from "../dynamics/tableContact";
+import {
+  calculateTableResizeControlGeometry,
+  type TableResizeArrowGeometry,
+} from "./tableResizeControl";
 
 export interface CanvasExactValueHoverTarget {
   left: number;
@@ -122,6 +150,8 @@ export function render(
   placementPreview: PlacementPreview | null = null,
   selectedStringId: string | null = null,
   stringConnectionPreview: StringConnectionPreview | null = null,
+  selectedTableId: string | null = null,
+  rangeMeasurements: RangeMeasurement[] = [],
 ): CanvasRenderResult {
   context.clearRect(0, 0, camera.viewportWidth, camera.viewportHeight);
   context.fillStyle = "#f8f7f1";
@@ -130,7 +160,9 @@ export function render(
   renderGrid(context, camera);
 
   const selectionWhiteMix = getSelectionWhiteMix(animationTimestamp);
-
+  const replacedTableId = placementPreview?.kind === "table"
+    ? placementPreview.sourceTableId
+    : undefined;
   if (scene.groundEnabled) {
     renderGround(
       context,
@@ -138,6 +170,17 @@ export function render(
       scene.groundHeight,
       scene.groundRough,
       groundSelected ? selectionWhiteMix : 0,
+    );
+  }
+
+  for (const table of scene.tables) {
+    if (table.id === replacedTableId) continue;
+    renderTable(
+      context,
+      table,
+      camera,
+      table.id === selectedTableId ? selectionWhiteMix : 0,
+      false,
     );
   }
 
@@ -154,14 +197,43 @@ export function render(
     );
   }
   if (placementPreview?.kind === "incline") {
-    renderPlacementPreview(context, placementPreview, camera, scene.inclines);
+    renderPlacementPreview(context, placementPreview, camera, scene);
+  }
+  if (placementPreview?.kind === "table") {
+    renderPlacementPreview(context, placementPreview, camera, scene);
   }
 
-  const displayedParticleStates = translateInclineContactParticleStates(
+  const mountedSupportPreviewScene = createMountedSupportDragPreviewScene(
+    scene,
+    placementPreview,
+  );
+  const displayedScene = mountedSupportPreviewScene ?? scene;
+
+  const movedPulley = placementPreview?.kind === "pulley" &&
+      placementPreview.sourcePulleyId
+    ? scene.pulleys.find(
+        (pulley) => pulley.id === placementPreview.sourcePulleyId,
+      )
+    : undefined;
+  const movedPulleyParticleIds = new Set(
+    movedPulley?.generatedParticleIds ?? [],
+  );
+  const translatedInclineParticleStates = translateInclineContactParticleStates(
     scene,
     particleStates,
     placementPreview,
   );
+  const translatedParticleStates = translateTableContactParticleStates(
+    scene,
+    translatedInclineParticleStates,
+    placementPreview,
+  );
+  const displayedParticleStates = translateMountedPulleyParticleStates(
+    scene,
+    displayedScene,
+    translatedParticleStates,
+    placementPreview,
+  ).filter((particle) => !movedPulleyParticleIds.has(particle.id));
   const particleGroups = groupParticlesByPosition(displayedParticleStates);
   const hoveredStringTargetId = stringConnectionPreview
     ? getHoveredStringTargetId(
@@ -178,11 +250,12 @@ export function render(
 
   renderStrings(
     context,
-    scene,
+    displayedScene,
     displayedParticleStates,
     camera,
     selectedStringId,
     selectionWhiteMix,
+    movedPulley?.stringId,
   );
   if (stringConnectionPreview) {
     renderStringConnectionPreview(
@@ -196,7 +269,7 @@ export function render(
   const forceAnnotationResult = shouldRenderForceAnnotations(scene)
     ? renderForceAnnotations(
         context,
-        scene,
+        displayedScene,
         displayedParticleStates,
         camera,
         currentTime,
@@ -210,7 +283,7 @@ export function render(
   if (currentTime === 0) {
     renderInitialVelocityAnnotations(
       context,
-      scene,
+      displayedScene,
       displayedParticleStates,
       camera,
     );
@@ -221,14 +294,23 @@ export function render(
     heightMeasurements,
     camera,
   ));
+  exactValueHoverTargets.push(...renderRangeMeasurements(
+    context,
+    rangeMeasurements,
+    camera,
+  ));
 
   for (const coincidentParticles of particleGroups) {
     const particle = coincidentParticles[coincidentParticles.length - 1];
-    const particleModel = scene.particles.find(
+    const particleModel = displayedScene.particles.find(
       (candidate) => candidate.id === particle.id,
     );
     const activeIncline = particleModel?.shape === "square"
-      ? getParticleForceContactDisplay(scene, particleModel, currentTime).incline
+      ? getParticleForceContactDisplay(
+          displayedScene,
+          particleModel,
+          currentTime,
+        ).incline
       : null;
     const hoveredAsStringTarget = coincidentParticles.some(
       (candidate) => candidate.id === hoveredStringTargetId,
@@ -254,13 +336,27 @@ export function render(
     );
   }
   if (placementPreview?.kind === "particle") {
-    renderPlacementPreview(context, placementPreview, camera, scene.inclines);
+    renderPlacementPreview(context, placementPreview, camera, scene);
+  }
+
+  renderPulleys(
+    context,
+    displayedScene,
+    camera,
+    selectedStringId,
+    selectionWhiteMix,
+    placementPreview?.kind === "pulley"
+      ? placementPreview.sourcePulleyId
+      : undefined,
+  );
+  if (placementPreview?.kind === "pulley") {
+    renderPlacementPreview(context, placementPreview, camera, scene);
   }
 
   if (shouldRenderForceAnnotations(scene)) {
     renderZeroResultantMarkers(
       context,
-      scene,
+      displayedScene,
       displayedParticleStates,
       camera,
       currentTime,
@@ -270,12 +366,21 @@ export function render(
   const selectedIncline = scene.inclines.find(
     (incline) => incline.id === selectedInclineId,
   );
-  if (selectedIncline) {
-    const displayedIncline = placementPreview?.kind === "incline" &&
-        placementPreview.sourceInclineId === selectedIncline.id
-      ? { ...selectedIncline, anchor: { ...placementPreview.position } }
-      : selectedIncline;
-    renderInclineLengthControl(context, displayedIncline, camera);
+  const selectedInclineIsBeingDragged = selectedIncline !== undefined &&
+    placementPreview?.kind === "incline" &&
+    placementPreview.sourceInclineId === selectedIncline.id;
+  if (selectedIncline && !selectedInclineIsBeingDragged) {
+    renderInclineLengthControl(context, selectedIncline, camera);
+  }
+
+  const selectedTable = scene.tables.find(
+    (table) => table.id === selectedTableId,
+  );
+  const selectedTableIsBeingDragged = selectedTable !== undefined &&
+    placementPreview?.kind === "table" &&
+    placementPreview.sourceTableId === selectedTable.id;
+  if (selectedTable && !selectedTableIsBeingDragged) {
+    renderTableResizeControl(context, selectedTable, camera);
   }
 
   return {
@@ -291,6 +396,133 @@ export function render(
   };
 }
 
+export function calculateDiagramOutlineWidth(pixelsPerMetre: number): number {
+  return Math.max(2, pixelsPerMetre * 0.075);
+}
+
+export function calculateStringStrokeWidth(pixelsPerMetre: number): number {
+  return Math.max(2, Math.min(3.5, pixelsPerMetre * 0.08));
+}
+
+function renderPulleys(
+  context: CanvasRenderingContext2D,
+  scene: Scene,
+  camera: Camera,
+  selectedStringId: string | null,
+  selectionWhiteMix: number,
+  excludedPulleyId?: string,
+): void {
+  for (const pulley of scene.pulleys) {
+    if (pulley.id === excludedPulleyId) continue;
+    const centre = getMountedPulleyCentre(scene, pulley.mount, pulley.centre);
+    if (!centre) continue;
+    const screenCentre = worldToScreen(centre, camera);
+    const radius = PULLEY_RADIUS_METRES * camera.pixelsPerMetre;
+    const whiteMix = pulley.stringId === selectedStringId ? selectionWhiteMix : 0;
+    context.save();
+    context.fillStyle = mixColourWithWhite("#cbc8c0", whiteMix);
+    context.strokeStyle = mixColourWithWhite("#292d2c", whiteMix);
+    context.lineWidth = calculateDiagramOutlineWidth(camera.pixelsPerMetre);
+    context.beginPath();
+    context.arc(screenCentre.x, screenCentre.y, radius, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    context.restore();
+    const mountMarker = calculatePulleyMountMarkerGeometry(
+      scene,
+      pulley,
+      camera,
+    );
+    if (mountMarker) renderPulleyMountMarker(context, mountMarker);
+  }
+}
+
+export function calculatePulleyMountMarkerGeometry(
+  scene: Pick<Scene, "tables" | "inclines">,
+  pulley: Scene["pulleys"][number],
+  camera: Camera,
+): { centre: ScreenPoint; radius: number } | null {
+  if (pulley.mount.kind === "free") return null;
+  const centre = getMountedPulleyCentre(scene, pulley.mount, pulley.centre);
+  if (!centre) return null;
+  return {
+    centre: worldToScreen(centre, camera),
+    radius: camera.pixelsPerMetre * PULLEY_MOUNT_MARKER_RADIUS_METRES,
+  };
+}
+
+function renderPulleyMountMarker(
+  context: CanvasRenderingContext2D,
+  marker: { centre: ScreenPoint; radius: number },
+): void {
+  context.save();
+  context.fillStyle = INCLINE_LENGTH_CONTROL_FILL;
+  context.strokeStyle = INCLINE_LENGTH_CONTROL_STROKE;
+  context.lineWidth = 2;
+  context.beginPath();
+  context.arc(
+    marker.centre.x,
+    marker.centre.y,
+    marker.radius,
+    0,
+    Math.PI * 2,
+  );
+  context.fill();
+  context.stroke();
+  context.restore();
+}
+
+function renderTable(
+  context: CanvasRenderingContext2D,
+  table: Scene["tables"][number],
+  camera: Camera,
+  whiteMix: number,
+  invalidPlacement = false,
+): void {
+  const geometry = getTableGeometry(table);
+  const topLeft = worldToScreen(geometry.topLeft, camera);
+  const bottomRight = worldToScreen(geometry.bottomRight, camera);
+  const width = bottomRight.x - topLeft.x;
+  const height = bottomRight.y - topLeft.y;
+  context.save();
+  const fillColour = invalidPlacement ? "#e5aaa5" : "#cbc8c0";
+  const strokeColour = invalidPlacement ? "#a62d26" : "#292d2c";
+  const outlineWidth = calculateDiagramOutlineWidth(camera.pixelsPerMetre);
+  context.fillStyle = mixColourWithWhite(fillColour, whiteMix);
+  context.strokeStyle = mixColourWithWhite(strokeColour, whiteMix);
+  context.lineWidth = outlineWidth;
+  context.fillRect(topLeft.x, topLeft.y, width, height);
+  if (table.roughness.kind === "rough") {
+    context.save();
+    context.beginPath();
+    context.rect(topLeft.x, topLeft.y, width, height);
+    context.clip();
+    context.strokeStyle = mixColourWithWhite(
+      invalidPlacement ? "#c86860" : "#aaa69d",
+      whiteMix,
+    );
+    context.lineWidth = calculateDiagramOutlineWidth(camera.pixelsPerMetre);
+    context.beginPath();
+    for (let x = topLeft.x - 18; x < bottomRight.x + 28; x += 28) {
+      context.moveTo(x, topLeft.y + 0.5);
+      context.lineTo(x - 17, topLeft.y + 18);
+    }
+    context.stroke();
+    context.restore();
+  }
+  context.strokeStyle = mixColourWithWhite(strokeColour, whiteMix);
+  context.lineJoin = "miter";
+  context.lineCap = "butt";
+  context.beginPath();
+  context.moveTo(topLeft.x, topLeft.y);
+  context.lineTo(bottomRight.x, topLeft.y);
+  context.lineTo(bottomRight.x, bottomRight.y);
+  context.lineTo(topLeft.x, bottomRight.y);
+  context.closePath();
+  context.stroke();
+  context.restore();
+}
+
 function renderStrings(
   context: CanvasRenderingContext2D,
   scene: Scene,
@@ -298,8 +530,10 @@ function renderStrings(
   camera: Camera,
   selectedStringId: string | null,
   selectionWhiteMix: number,
+  excludedStringId?: string,
 ): void {
   for (const string of scene.strings) {
+    if (string.id === excludedStringId) continue;
     const segment = getStringRenderSegment(scene, string, particleStates, camera);
     if (!segment) continue;
     context.save();
@@ -308,7 +542,7 @@ function renderStrings(
       selectedStringId,
       selectionWhiteMix,
     );
-    context.lineWidth = Math.max(2, Math.min(3.5, camera.pixelsPerMetre * 0.08));
+    context.lineWidth = calculateStringStrokeWidth(camera.pixelsPerMetre);
     context.lineCap = "round";
     context.beginPath();
     const [firstPoint, ...remainingPoints] = segment.visualPoints;
@@ -379,6 +613,7 @@ function mixColour(from: string, to: string, amount: number): string {
 
 const INCLINE_LENGTH_CONTROL_FILL = "#f2d45c";
 const INCLINE_LENGTH_CONTROL_STROKE = "#292d2c";
+const PULLEY_MOUNT_MARKER_RADIUS_METRES = 0.16;
 
 function renderInclineLengthControl(
   context: CanvasRenderingContext2D,
@@ -429,27 +664,113 @@ function drawInclineLengthArrow(
     ? geometry.decreaseCentre
     : geometry.increaseCentre;
   const sign = direction === "decrease" ? -1 : 1;
-  const length = geometry.cellSize * 0.58;
-  const tipX = centre.x + sign * length / 2;
-  const tailX = centre.x - sign * length / 2;
+  drawResizeControlArrow(
+    context,
+    centre,
+    { x: sign, y: 0 },
+    geometry.cellSize,
+  );
+}
+
+function drawResizeControlArrow(
+  context: CanvasRenderingContext2D,
+  centre: ScreenPoint,
+  direction: ScreenPoint,
+  cellSize: number,
+): void {
+  const length = cellSize * 0.58;
+  const tip = {
+    x: centre.x + direction.x * length / 2,
+    y: centre.y + direction.y * length / 2,
+  };
+  const tail = {
+    x: centre.x - direction.x * length / 2,
+    y: centre.y - direction.y * length / 2,
+  };
+  const perpendicular = { x: -direction.y, y: direction.x };
   const headLength = length * 0.39;
-  const headHalfHeight = length * 0.39;
+  const headHalfWidth = length * 0.39;
+  const headBase = {
+    x: tip.x - direction.x * headLength,
+    y: tip.y - direction.y * headLength,
+  };
   context.save();
   context.lineCap = "round";
   context.lineJoin = "round";
   context.beginPath();
-  context.moveTo(tailX, centre.y);
-  context.lineTo(tipX, centre.y);
-  context.moveTo(tipX - sign * headLength, centre.y - headHalfHeight);
-  context.lineTo(tipX, centre.y);
-  context.lineTo(tipX - sign * headLength, centre.y + headHalfHeight);
+  context.moveTo(tail.x, tail.y);
+  context.lineTo(tip.x, tip.y);
+  context.moveTo(
+    headBase.x + perpendicular.x * headHalfWidth,
+    headBase.y + perpendicular.y * headHalfWidth,
+  );
+  context.lineTo(tip.x, tip.y);
+  context.lineTo(
+    headBase.x - perpendicular.x * headHalfWidth,
+    headBase.y - perpendicular.y * headHalfWidth,
+  );
   context.strokeStyle = INCLINE_LENGTH_CONTROL_STROKE;
-  context.lineWidth = Math.max(5, geometry.cellSize * 0.24);
+  context.lineWidth = Math.max(5, cellSize * 0.24);
   context.stroke();
   context.strokeStyle = INCLINE_LENGTH_CONTROL_FILL;
-  context.lineWidth = Math.max(2, geometry.cellSize * 0.1);
+  context.lineWidth = Math.max(2, cellSize * 0.1);
   context.stroke();
   context.restore();
+}
+
+function renderTableResizeControl(
+  context: CanvasRenderingContext2D,
+  table: Scene["tables"][number],
+  camera: Camera,
+): void {
+  context.save();
+  context.fillStyle = INCLINE_LENGTH_CONTROL_FILL;
+  context.strokeStyle = INCLINE_LENGTH_CONTROL_STROKE;
+  context.lineWidth = Math.max(2, camera.pixelsPerMetre * 0.07);
+  context.lineJoin = "round";
+
+  for (const handle of calculateTableResizeControlGeometry(table, camera)) {
+    for (const arrow of handle.arrows) {
+      if (!arrow.enabled) continue;
+      drawTableResizeArrow(context, arrow, camera.pixelsPerMetre);
+    }
+    context.beginPath();
+    context.arc(
+      handle.centre.x,
+      handle.centre.y,
+      handle.outerRadius,
+      0,
+      Math.PI * 2,
+    );
+    context.fill();
+    context.stroke();
+    context.beginPath();
+    context.arc(
+      handle.centre.x,
+      handle.centre.y,
+      handle.innerRadius,
+      0,
+      Math.PI * 2,
+    );
+    context.fill();
+    context.stroke();
+  }
+  context.restore();
+}
+
+function drawTableResizeArrow(
+  context: CanvasRenderingContext2D,
+  arrow: TableResizeArrowGeometry,
+  cellSize: number,
+): void {
+  const direction = arrow.direction === "up"
+    ? { x: 0, y: -1 }
+    : arrow.direction === "down"
+      ? { x: 0, y: 1 }
+      : arrow.direction === "left"
+        ? { x: -1, y: 0 }
+        : { x: 1, y: 0 };
+  drawResizeControlArrow(context, arrow.centre, direction, cellSize);
 }
 
 export function translateInclineContactParticleStates(
@@ -469,9 +790,11 @@ export function translateInclineContactParticleStates(
   );
   if (!sourceIncline) return [...particleStates];
 
-  const offset = {
-    x: placementPreview.position.x - sourceIncline.anchor.x,
-    y: placementPreview.position.y - sourceIncline.anchor.y,
+  const previewIncline = {
+    ...sourceIncline,
+    anchor: { ...placementPreview.position },
+    horizontalLength:
+      placementPreview.horizontalLength ?? sourceIncline.horizontalLength,
   };
   const associatedParticleIds = new Set(
     scene.particles
@@ -486,14 +809,232 @@ export function translateInclineContactParticleStates(
     const isCurrentlyOnIncline = associatedParticleIds.has(particleState.id) &&
       isPointOnInclineSegment(particleState.position, sourceIncline, 1e-7);
     if (!isCurrentlyOnIncline) return particleState;
+    const q = Math.min(
+      getInclineGeometry(previewIncline).slopeLength,
+      projectPointOntoIncline(particleState.position, sourceIncline).q,
+    );
+    return {
+      ...particleState,
+      position: pointAtInclineCoordinate(previewIncline, q),
+    };
+  });
+}
+
+export function translateTableContactParticleStates(
+  scene: Scene,
+  particleStates: readonly ParticleState[],
+  placementPreview: PlacementPreview | null,
+): ParticleState[] {
+  if (
+    placementPreview?.kind !== "table" ||
+    !placementPreview.sourceTableId
+  ) return [...particleStates];
+  const sourceTable = scene.tables.find(
+    (table) => table.id === placementPreview.sourceTableId,
+  );
+  if (!sourceTable) return [...particleStates];
+  const previewTable = {
+    ...sourceTable,
+    topLeft: { ...placementPreview.position },
+    width: placementPreview.width ?? sourceTable.width,
+    height: placementPreview.height ?? sourceTable.height,
+  };
+  const associatedParticleIds = new Set(
+    scene.particles
+      .filter((particle) =>
+        particle.initialTableContact?.tableId === sourceTable.id
+      )
+      .map((particle) => particle.id),
+  );
+
+  return particleStates.map((particleState) => {
+    const isCurrentlyOnTable = associatedParticleIds.has(particleState.id) &&
+      isPointOnTableTop(particleState.position, sourceTable, 1e-7);
+    if (!isCurrentlyOnTable) return particleState;
+    const q = Math.max(
+      0,
+      Math.min(
+        previewTable.width,
+        particleState.position.x - sourceTable.topLeft.x,
+      ),
+    );
+    return {
+      ...particleState,
+      position: pointAtTableCoordinate(previewTable, q),
+    };
+  });
+}
+
+export function createMountedSupportDragPreviewScene(
+  scene: Scene,
+  placementPreview: PlacementPreview | null,
+): Scene | null {
+  const isMovedIncline = placementPreview?.kind === "incline" &&
+    placementPreview.sourceInclineId !== undefined;
+  const isMovedTable = placementPreview?.kind === "table" &&
+    placementPreview.sourceTableId !== undefined;
+  if (!isMovedIncline && !isMovedTable) return null;
+
+  const previewScene = cloneSceneForSupportDrag(scene);
+  if (isMovedIncline) {
+    const inclineId = placementPreview.sourceInclineId!;
+    const incline = previewScene.inclines.find(
+      (candidate) => candidate.id === inclineId,
+    );
+    if (!incline) return null;
+    incline.anchor = { ...placementPreview.position };
+    incline.horizontalLength =
+      placementPreview.horizontalLength ?? incline.horizontalLength;
+    incline.horizontalLengthInput = String(incline.horizontalLength);
+    const previewSlopeLength = getInclineGeometry(incline).slopeLength;
+    for (const particle of previewScene.particles) {
+      const contact = particle.initialInclineContact;
+      if (contact?.inclineId !== incline.id) continue;
+      contact.q = Math.max(0, Math.min(previewSlopeLength, contact.q));
+      particle.initialPosition = pointAtInclineCoordinate(incline, contact.q);
+    }
+    for (const pulley of previewScene.pulleys) {
+      if (
+        pulley.mount.kind === "incline-end" &&
+        pulley.mount.inclineId === incline.id
+      ) {
+        rebuildMountedPulleyApparatus(previewScene, pulley.id);
+      }
+    }
+    return previewScene;
+  }
+
+  if (
+    placementPreview?.kind !== "table" ||
+    !placementPreview.sourceTableId
+  ) {
+    return null;
+  }
+  const tableId = placementPreview.sourceTableId;
+  const table = previewScene.tables.find(
+    (candidate) => candidate.id === tableId,
+  );
+  const sourceTable = scene.tables.find((candidate) => candidate.id === tableId);
+  if (!table || !sourceTable) return null;
+  const previousWidth = sourceTable.width;
+  table.topLeft = { ...placementPreview.position };
+  table.width = placementPreview.width ?? table.width;
+  table.widthInput = String(table.width);
+  table.height = placementPreview.height ?? table.height;
+  table.heightInput = String(table.height);
+  for (const particle of previewScene.particles) {
+    const contact = particle.initialTableContact;
+    if (contact?.tableId !== table.id) continue;
+    const rightMountedPulley = previewScene.pulleys.find((pulley) =>
+      pulley.mount.kind === "table-corner" &&
+      pulley.mount.tableId === table.id &&
+      pulley.mount.side === "right" &&
+      previewScene.strings.some((string) =>
+        string.id === pulley.stringId && string.particleAId === particle.id
+      )
+    );
+    const q = rightMountedPulley
+      ? table.width - (previousWidth - contact.q)
+      : contact.q;
+    contact.q = Math.max(0, Math.min(table.width, q));
+    particle.initialPosition = pointAtTableCoordinate(table, contact.q);
+  }
+  for (const pulley of previewScene.pulleys) {
+    if (
+      pulley.mount.kind === "table-corner" &&
+      pulley.mount.tableId === table.id
+    ) {
+      rebuildMountedPulleyApparatus(previewScene, pulley.id);
+    }
+  }
+  return previewScene;
+}
+
+function translateMountedPulleyParticleStates(
+  scene: Scene,
+  previewScene: Scene,
+  particleStates: readonly ParticleState[],
+  placementPreview: PlacementPreview | null,
+): ParticleState[] {
+  if (previewScene === scene) return [...particleStates];
+  const movedPulleyParticleIds = new Set(
+    scene.pulleys
+      .filter((pulley) =>
+        placementPreview?.kind === "incline"
+          ? pulley.mount.kind === "incline-end" &&
+            pulley.mount.inclineId === placementPreview.sourceInclineId
+          : placementPreview?.kind === "table" &&
+            pulley.mount.kind === "table-corner" &&
+            pulley.mount.tableId === placementPreview.sourceTableId
+      )
+      .flatMap((pulley) => pulley.generatedParticleIds),
+  );
+  return particleStates.map((particleState) => {
+    if (!movedPulleyParticleIds.has(particleState.id)) return particleState;
+    const originalParticle = scene.particles.find(
+      (particle) => particle.id === particleState.id,
+    );
+    const previewParticle = previewScene.particles.find(
+      (particle) => particle.id === particleState.id,
+    );
+    if (!originalParticle || !previewParticle) return particleState;
+    const alreadyTranslatedWithSupport =
+      placementPreview?.kind === "incline" &&
+      originalParticle.initialInclineContact?.inclineId ===
+        placementPreview.sourceInclineId ||
+      placementPreview?.kind === "table" &&
+        originalParticle.initialTableContact?.tableId ===
+          placementPreview.sourceTableId;
+    if (alreadyTranslatedWithSupport) return particleState;
     return {
       ...particleState,
       position: {
-        x: particleState.position.x + offset.x,
-        y: particleState.position.y + offset.y,
+        x: particleState.position.x +
+          previewParticle.initialPosition.x -
+          originalParticle.initialPosition.x,
+        y: particleState.position.y +
+          previewParticle.initialPosition.y -
+          originalParticle.initialPosition.y,
       },
     };
   });
+}
+
+function cloneSceneForSupportDrag(scene: Scene): Scene {
+  return {
+    ...scene,
+    particles: scene.particles.map((particle) => ({
+      ...particle,
+      initialPosition: { ...particle.initialPosition },
+      initialInclineContact: particle.initialInclineContact
+        ? { ...particle.initialInclineContact }
+        : undefined,
+      initialTableContact: particle.initialTableContact
+        ? { ...particle.initialTableContact }
+        : undefined,
+    })),
+    inclines: scene.inclines.map((incline) => ({
+      ...incline,
+      anchor: { ...incline.anchor },
+    })),
+    tables: scene.tables.map((table) => ({
+      ...table,
+      topLeft: { ...table.topLeft },
+    })),
+    strings: scene.strings.map((string) => ({
+      ...string,
+      route: string.route ? { ...string.route } : undefined,
+    })),
+    pulleys: scene.pulleys.map((pulley) => ({
+      ...pulley,
+      centre: { ...pulley.centre },
+      mount: { ...pulley.mount },
+      generatedParticleIds: [
+        pulley.generatedParticleIds[0],
+        pulley.generatedParticleIds[1],
+      ],
+    })),
+  };
 }
 
 export const PLACEMENT_PREVIEW_OPACITY = 0.42;
@@ -502,10 +1043,12 @@ function renderPlacementPreview(
   context: CanvasRenderingContext2D,
   preview: PlacementPreview,
   camera: Camera,
-  inclines: readonly Incline[],
+  scene: Scene,
 ): void {
   context.save();
-  context.globalAlpha = preview.kind === "incline" && preview.sourceInclineId
+  context.globalAlpha = (preview.kind === "incline" && preview.sourceInclineId) ||
+      (preview.kind === "table" && preview.sourceTableId) ||
+      (preview.kind === "pulley" && preview.sourcePulleyId)
     ? 1
     : PLACEMENT_PREVIEW_OPACITY;
   if (preview.kind === "particle") {
@@ -521,21 +1064,154 @@ function renderPlacementPreview(
       camera,
       0,
     );
-  } else {
+  } else if (preview.kind === "incline") {
     const sourceIncline = preview.sourceInclineId
-      ? inclines.find((incline) => incline.id === preview.sourceInclineId)
+      ? scene.inclines.find(
+          (incline) => incline.id === preview.sourceInclineId,
+        )
       : undefined;
     renderIncline(
       context,
       sourceIncline
-        ? { ...sourceIncline, anchor: { ...preview.position } }
+        ? {
+            ...sourceIncline,
+            anchor: { ...preview.position },
+            horizontalLength:
+              preview.horizontalLength ?? sourceIncline.horizontalLength,
+          }
         : createIncline("placement-preview", preview.position),
       camera,
       0,
       !preview.isValid,
     );
+  } else if (preview.kind === "table") {
+    const table = createTable(
+      "placement-preview",
+      preview.position,
+      preview.width,
+      preview.height,
+    );
+    renderTable(
+      context,
+      table,
+      camera,
+      0,
+      !preview.isValid,
+    );
+  } else {
+    renderPulleyPlacementPreview(context, preview, camera, scene);
+    if (preview.mountPoint) {
+      renderPulleyMountMarker(context, {
+        centre: worldToScreen(preview.mountPoint, camera),
+        radius: camera.pixelsPerMetre * PULLEY_MOUNT_MARKER_RADIUS_METRES,
+      });
+    }
   }
   context.restore();
+}
+
+function renderPulleyPlacementPreview(
+  context: CanvasRenderingContext2D,
+  preview: Extract<PlacementPreview, { kind: "pulley" }>,
+  camera: Camera,
+  scene: Scene,
+): void {
+  const placement = getPulleyApparatusPlacementPreview(
+    scene,
+    preview.position,
+    preview.mount,
+    preview.sourcePulleyId,
+  );
+  if (!placement) return;
+  const { centre, route } = placement;
+  const endpointA = placement.particleA.initialPosition;
+  const endpointB = placement.particleB.initialPosition;
+  const tangentA = route.endpointATangent;
+  const tangentB = route.endpointBTangent;
+  const endpointAIncline = placement.particleA.initialInclineContact
+    ? scene.inclines.find(
+        (incline) =>
+          incline.id === placement.particleA.initialInclineContact?.inclineId,
+      ) ?? null
+    : null;
+  const supportedStringOffset = calculatePulleyPreviewStringOffset(
+    preview.mount,
+    scene.inclines,
+  );
+  const visualEndpointA = {
+    x: endpointA.x + supportedStringOffset.x,
+    y: endpointA.y + supportedStringOffset.y,
+  };
+  const visualTangentA = {
+    x: tangentA.x + supportedStringOffset.x,
+    y: tangentA.y + supportedStringOffset.y,
+  };
+  const screenPoints = [
+    visualEndpointA,
+    visualTangentA,
+    ...route.wrappedPoints.slice(1, -1),
+    tangentB,
+    endpointB,
+  ]
+    .map((point) => worldToScreen(point, camera));
+  context.strokeStyle = preview.isValid ? STRING_COLOUR : "#a62d26";
+  context.lineWidth = calculateStringStrokeWidth(camera.pixelsPerMetre);
+  context.lineCap = "round";
+  context.beginPath();
+  context.moveTo(screenPoints[0].x, screenPoints[0].y);
+  for (const point of screenPoints.slice(1)) context.lineTo(point.x, point.y);
+  context.stroke();
+
+  for (const [index, position] of [endpointA, endpointB].entries()) {
+    renderParticle(
+      context,
+      {
+        id: `pulley-preview-${index}`,
+        position,
+        velocity: { x: 0, y: 0 },
+        acceleration: { x: 0, y: 0 },
+      },
+      1,
+      camera,
+      0,
+      "square",
+      index === 0 ? endpointAIncline : null,
+      !preview.isValid,
+    );
+  }
+  const screenCentre = worldToScreen(centre, camera);
+  const screenRadius = PULLEY_RADIUS_METRES * camera.pixelsPerMetre;
+  context.fillStyle = preview.isValid ? "#cbc8c0" : "#e5aaa5";
+  context.strokeStyle = preview.isValid ? "#292d2c" : "#a62d26";
+  context.lineWidth = calculateDiagramOutlineWidth(camera.pixelsPerMetre);
+  context.beginPath();
+  context.arc(screenCentre.x, screenCentre.y, screenRadius, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
+}
+
+export function calculatePulleyPreviewStringOffset(
+  mount: Extract<PlacementPreview, { kind: "pulley" }>["mount"],
+  inclines: readonly Incline[],
+): Vec2 {
+  const offsetMagnitude = PARTICLE_DIAMETER_METRES / 2 *
+    STRING_OFFSET_RADIUS_RATIO;
+  if (mount.kind === "table-corner") {
+    return { x: 0, y: offsetMagnitude };
+  }
+  if (mount.kind === "incline-end") {
+    const incline = inclines.find(
+      (candidate) => candidate.id === mount.inclineId,
+    );
+    if (incline) {
+      const normal = getInclineGeometry(incline).normal;
+      return {
+        x: normal.x * offsetMagnitude,
+        y: normal.y * offsetMagnitude,
+      };
+    }
+  }
+  return { x: 0, y: 0 };
 }
 
 function renderIncline(
@@ -557,7 +1233,7 @@ function renderIncline(
   const strokeColour = invalidPlacement ? "#a62d26" : "#292d2c";
   context.fillStyle = mixColourWithWhite(fillColour, whiteMix);
   context.strokeStyle = mixColourWithWhite(strokeColour, whiteMix);
-  context.lineWidth = 3;
+  context.lineWidth = calculateDiagramOutlineWidth(camera.pixelsPerMetre);
   context.lineJoin = "round";
   context.beginPath();
   context.moveTo(lower.x, lower.y);
@@ -573,7 +1249,7 @@ function renderIncline(
       invalidPlacement ? "#c86860" : "#aaa69d",
       whiteMix,
     );
-    context.lineWidth = 3;
+    context.lineWidth = calculateDiagramOutlineWidth(camera.pixelsPerMetre);
     context.beginPath();
     for (const segment of calculateInclineRoughLineSegments(
       lower,
@@ -588,7 +1264,7 @@ function renderIncline(
   }
 
   context.strokeStyle = mixColourWithWhite(strokeColour, whiteMix);
-  context.lineWidth = 3;
+  context.lineWidth = calculateDiagramOutlineWidth(camera.pixelsPerMetre);
   context.beginPath();
   context.moveTo(lower.x, lower.y);
   context.lineTo(upper.x, upper.y);
@@ -846,7 +1522,7 @@ function renderForceAnnotations(
       context.save();
       context.strokeStyle = annotation.colour ?? "#292d2c";
       context.fillStyle = annotation.colour ?? "#292d2c";
-      context.lineWidth = 3;
+      context.lineWidth = calculateStringStrokeWidth(camera.pixelsPerMetre);
       context.lineCap = "round";
       context.setLineDash([...FORCE_ARROW_LINE_DASH]);
       context.beginPath();
@@ -962,17 +1638,25 @@ function renderTensionArrowHead(
   if (!string) return;
   const segment = getStringRenderSegment(scene, string, particleStates, camera);
   if (!segment) return;
-  const from = string.particleAId === particleId
-    ? segment.visualStart
-    : segment.visualEnd;
-  const toward = string.particleAId === particleId
-    ? segment.visualEnd
-    : segment.visualStart;
+  const isEndpointA = string.particleAId === particleId;
+  const from = isEndpointA ? segment.visualStart : segment.visualEnd;
+  const toward = string.route?.kind === "pulley"
+    ? isEndpointA
+      ? segment.visualPoints[1]
+      : segment.visualPoints[segment.visualPoints.length - 2]
+    : isEndpointA
+      ? segment.visualEnd
+      : segment.visualStart;
+  if (!toward) return;
+  const adjacentLengthMetres = string.route?.kind === "pulley"
+    ? Math.hypot(toward.x - from.x, toward.y - from.y) /
+      camera.pixelsPerMetre
+    : string.length;
   const geometry = calculateTensionArrowHeadGeometry(
     from,
     toward,
     camera.pixelsPerMetre,
-    string.length,
+    adjacentLengthMetres,
   );
   if (!geometry) return;
   const colour = getStringStrokeColour(
@@ -983,7 +1667,7 @@ function renderTensionArrowHead(
 
   context.save();
   context.strokeStyle = colour;
-  context.lineWidth = 3;
+  context.lineWidth = calculateStringStrokeWidth(camera.pixelsPerMetre);
   context.lineCap = "round";
   context.lineJoin = "round";
   context.beginPath();
@@ -999,7 +1683,12 @@ function renderTensionArrowHead(
     Math.max(6, geometry.headWidth * 0.7),
     tooltip,
   ));
-  const showMagnitude = !geometry.atMidpoint || string.particleAId === particleId;
+  const isPulleyString = string.route?.kind === "pulley";
+  const showMagnitude = shouldShowTensionMagnitude(
+    isPulleyString,
+    geometry.atMidpoint,
+    isEndpointA,
+  );
   if (!showMagnitude) return;
   const fontSize = Math.max(14, Math.min(21, camera.pixelsPerMetre * 0.42));
   context.save();
@@ -1013,6 +1702,15 @@ function renderTensionArrowHead(
     labelWidth,
     fontSize,
   );
+  if (isPulleyString) {
+    const offset = calculatePulleyTensionLabelOffset(
+      geometry.direction,
+      isEndpointA,
+      fontSize,
+    );
+    labelPosition.x += offset.x;
+    labelPosition.y += offset.y;
+  }
   mathLabels.push({
     text: labelText,
     position: labelPosition,
@@ -1101,6 +1799,28 @@ export function calculateTensionMagnitudeLabelPosition(
   return {
     x: geometry.tip.x - Math.max(0, labelWidth) / 2,
     y: arrowTop - gap - Math.max(0, fontSize) / 2,
+  };
+}
+
+export function shouldShowTensionMagnitude(
+  isPulleyString: boolean,
+  atMidpoint: boolean,
+  isEndpointA: boolean,
+): boolean {
+  return isPulleyString || !atMidpoint || isEndpointA;
+}
+
+export function calculatePulleyTensionLabelOffset(
+  direction: ScreenPoint,
+  isEndpointA: boolean,
+  fontSize: number,
+): ScreenPoint {
+  const perpendicular = { x: -direction.y, y: direction.x };
+  const side = isEndpointA ? -1 : 1;
+  const offset = Math.max(8, Math.max(0, fontSize) * 0.65);
+  return {
+    x: perpendicular.x * side * offset,
+    y: perpendicular.y * side * offset,
   };
 }
 
@@ -1244,7 +1964,66 @@ export function getParticleForceContactDisplay(
     groundRough: scene.groundRough,
     groundFriction: scene.groundFriction,
     inclines: scene.inclines,
+    tables: scene.tables,
   });
+  if (
+    connectedConstraintActive &&
+    connectedAnalysis.support.kind === "pulley" &&
+    activeConnectedEndpoint
+  ) {
+    const inclineId = particle.initialInclineContact?.inclineId;
+    const incline = inclineId
+      ? scene.inclines.find((candidate) => candidate.id === inclineId)
+      : undefined;
+    if (incline) {
+      const normalReaction = createInclineNormalReactionDisplay(
+        particle,
+        incline,
+        scene.settings,
+        activeConnectedEndpoint.normalReactionMagnitude,
+      ) ?? 0;
+      return {
+        normalReaction,
+        friction: incline.roughness.kind === "rough"
+          ? createFrictionDisplay(
+              particle,
+              scene.settings,
+              normalReaction,
+              activeConnectedEndpoint.friction,
+              incline.roughness.coefficientOfFriction,
+              incline.roughness.coefficientInput,
+              incline,
+            )
+          : null,
+        incline,
+        tension,
+      };
+    }
+    const tableId = particle.initialTableContact?.tableId;
+    const table = tableId
+      ? scene.tables.find((candidate) => candidate.id === tableId)
+      : undefined;
+    if (table) {
+      const normalReaction = activeConnectedEndpoint.normalReactionMagnitude;
+      return {
+        normalReaction,
+        friction: table.roughness.kind === "rough"
+          ? createFrictionDisplay(
+              particle,
+              scene.settings,
+              normalReaction,
+              activeConnectedEndpoint.friction,
+              table.roughness.coefficientOfFriction,
+              table.roughness.coefficientInput,
+              null,
+            )
+          : null,
+        incline: null,
+        tension,
+      };
+    }
+    return { normalReaction: 0, friction: null, incline: null, tension };
+  }
   if (
     connectedConstraintActive &&
     connectedAnalysis.support.kind === "incline" &&
@@ -1302,6 +2081,35 @@ export function getParticleForceContactDisplay(
       tension,
     };
   }
+  if (
+    connectedConstraintActive &&
+    connectedAnalysis.support.kind === "table" &&
+    activeConnectedEndpoint
+  ) {
+    const tableId = connectedAnalysis.support.tableId;
+    const table = scene.tables.find(
+      (candidate) => candidate.id === tableId,
+    );
+    if (table) {
+      const normalReaction = activeConnectedEndpoint.normalReactionMagnitude;
+      return {
+        normalReaction,
+        friction: table.roughness.kind === "rough"
+          ? createFrictionDisplay(
+              particle,
+              scene.settings,
+              normalReaction,
+              activeConnectedEndpoint.friction,
+              table.roughness.coefficientOfFriction,
+              table.roughness.coefficientInput,
+              null,
+            )
+          : null,
+        incline: null,
+        tension,
+      };
+    }
+  }
   if (trajectory.contact.kind === "incline") {
     const inclineId = trajectory.contact.inclineId;
     const incline = scene.inclines.find(
@@ -1330,6 +2138,38 @@ export function getParticleForceContactDisplay(
         incline,
         tension,
       };
+    }
+  }
+  if (particle.initialTableContact) {
+    const table = scene.tables.find(
+      (candidate) => candidate.id === particle.initialTableContact?.tableId,
+    );
+    if (table) {
+      const tableContact = analyseTableContactForces(
+        particle,
+        table,
+        time,
+        scene.settings.gravity,
+      );
+      if (tableContact.kind === "table-contact" || tableContact.kind === "endpoint") {
+        const normalReaction = tableContact.normalReactionMagnitude;
+        return {
+          normalReaction,
+          friction: table.roughness.kind === "rough"
+            ? createFrictionDisplay(
+                particle,
+                scene.settings,
+                normalReaction,
+                tableContact.friction,
+                table.roughness.coefficientOfFriction,
+                table.roughness.coefficientInput,
+                null,
+              )
+            : null,
+          incline: null,
+          tension,
+        };
+      }
     }
   }
   const normalReaction = trajectory.contact.kind === "ground"
@@ -1381,7 +2221,7 @@ function renderInclineWeightComponents(
   context.save();
   context.strokeStyle = INITIAL_VELOCITY_COLOUR;
   context.fillStyle = INITIAL_VELOCITY_COLOUR;
-  context.lineWidth = 3;
+  context.lineWidth = calculateStringStrokeWidth(camera.pixelsPerMetre);
   context.lineCap = "round";
   drawDashedTeachingLine(context, origin, perpendicularTip);
   drawDashedTeachingLine(context, perpendicularTip, weightTip);
@@ -1492,6 +2332,15 @@ function renderHeightMeasurements(
 ): CanvasExactValueHoverTarget[] {
   const hoverTargets: CanvasExactValueHoverTarget[] = [];
   for (const measurement of measurements) {
+    if (measurement.referencePosition) {
+      const hoverTarget = renderInclineDistanceMeasurement(
+        context,
+        measurement,
+        camera,
+      );
+      if (hoverTarget) hoverTargets.push(hoverTarget);
+      continue;
+    }
     const particlePoint = worldToScreen(measurement.position, camera);
     const referencePoint = worldToScreen(
       { x: measurement.position.x, y: measurement.groundHeight },
@@ -1580,6 +2429,246 @@ function renderHeightMeasurements(
     context.restore();
   }
   return hoverTargets;
+}
+
+function renderInclineDistanceMeasurement(
+  context: CanvasRenderingContext2D,
+  measurement: GreatestHeightMeasurement & {
+    referencePosition?: { x: number; y: number };
+  },
+  camera: Camera,
+): CanvasExactValueHoverTarget | null {
+  if (!measurement.referencePosition) return null;
+  const start = worldToScreen(measurement.referencePosition, camera);
+  const end = worldToScreen(measurement.position, camera);
+  const delta = { x: end.x - start.x, y: end.y - start.y };
+  const length = Math.hypot(delta.x, delta.y);
+  if (length <= 1e-9) return null;
+  const direction = { x: delta.x / length, y: delta.y / length };
+  const normal = { x: direction.y, y: -direction.x };
+  const offset = GREATEST_HEIGHT_ARROW_OFFSET_METRES * camera.pixelsPerMetre;
+  const dimensionStart = {
+    x: start.x + normal.x * offset,
+    y: start.y + normal.y * offset,
+  };
+  const dimensionEnd = {
+    x: end.x + normal.x * offset,
+    y: end.y + normal.y * offset,
+  };
+  const arrowLength = Math.max(6, Math.min(12, camera.pixelsPerMetre * 0.2));
+  const arrowHalfWidth = arrowLength * 0.55;
+
+  context.save();
+  context.strokeStyle = "#292d2c";
+  context.fillStyle = "#292d2c";
+  context.lineWidth = 2.5;
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  context.setLineDash([8, 7]);
+  context.beginPath();
+  context.moveTo(start.x, start.y);
+  context.lineTo(dimensionStart.x, dimensionStart.y);
+  context.moveTo(end.x, end.y);
+  context.lineTo(dimensionEnd.x, dimensionEnd.y);
+  context.stroke();
+
+  context.setLineDash([]);
+  context.beginPath();
+  context.moveTo(dimensionStart.x, dimensionStart.y);
+  context.lineTo(dimensionEnd.x, dimensionEnd.y);
+  for (const [point, sign] of [
+    [dimensionStart, 1],
+    [dimensionEnd, -1],
+  ] as const) {
+    context.moveTo(
+      point.x + direction.x * arrowLength * sign + normal.x * arrowHalfWidth,
+      point.y + direction.y * arrowLength * sign + normal.y * arrowHalfWidth,
+    );
+    context.lineTo(point.x, point.y);
+    context.lineTo(
+      point.x + direction.x * arrowLength * sign - normal.x * arrowHalfWidth,
+      point.y + direction.y * arrowLength * sign - normal.y * arrowHalfWidth,
+    );
+  }
+  context.stroke();
+
+  const fontSize = Math.max(15, Math.min(22, camera.pixelsPerMetre * 0.46));
+  context.font = `700 ${fontSize}px "KG Primary Penmanship Alt", sans-serif`;
+  context.textAlign = "left";
+  context.textBaseline = "middle";
+  const labelWidth = context.measureText(measurement.labelPrefix).width +
+    measureCanvasMathValue(context, measurement.valueDisplay, fontSize) +
+    context.measureText(" m").width;
+  const labelPosition = calculateInclineDistanceLabelPosition(
+    dimensionStart,
+    dimensionEnd,
+    normal,
+    labelWidth,
+    fontSize,
+  );
+  const valueBounds = drawHeightMeasurementLabel(
+    context,
+    measurement,
+    labelPosition.x,
+    labelPosition.y,
+    fontSize,
+  );
+  context.restore();
+  const tooltip = getExactValueTooltip(
+    measurement.valueDisplay,
+    measurement.height,
+  );
+  return tooltip
+    ? {
+        left: valueBounds.left - 4,
+        top: valueBounds.top - 4,
+        right: valueBounds.right + 4,
+        bottom: valueBounds.bottom + 4,
+        tooltip,
+      }
+    : null;
+}
+
+export function calculateInclineDistanceLabelPosition(
+  dimensionStart: ScreenPoint,
+  dimensionEnd: ScreenPoint,
+  outwardNormal: ScreenPoint,
+  labelWidth: number,
+  fontSize: number,
+): ScreenPoint {
+  const clearance = fontSize * 0.9;
+  const horizontalGap = fontSize * 0.4;
+  const anchor = {
+    x: (dimensionStart.x + dimensionEnd.x) / 2 + outwardNormal.x * clearance,
+    y: (dimensionStart.y + dimensionEnd.y) / 2 + outwardNormal.y * clearance,
+  };
+  const particleIsToTheRight = dimensionEnd.x >= dimensionStart.x;
+
+  return {
+    x: particleIsToTheRight
+      ? anchor.x - horizontalGap - labelWidth
+      : anchor.x + horizontalGap,
+    y: anchor.y,
+  };
+}
+
+function renderRangeMeasurements(
+  context: CanvasRenderingContext2D,
+  measurements: RangeMeasurement[],
+  camera: Camera,
+): CanvasExactValueHoverTarget[] {
+  const hoverTargets: CanvasExactValueHoverTarget[] = [];
+  for (const measurement of measurements) {
+    const initialPoint = worldToScreen(
+      { x: measurement.initialX, y: measurement.groundHeight },
+      camera,
+    );
+    const finalPoint = worldToScreen(
+      { x: measurement.finalX, y: measurement.groundHeight },
+      camera,
+    );
+    const leftX = Math.min(initialPoint.x, finalPoint.x);
+    const rightX = Math.max(initialPoint.x, finalPoint.x);
+    const hasVisibleSpan = rightX - leftX > 1e-6;
+    const verticalGeometry = calculateRangeVerticalGeometry(
+      initialPoint.y,
+      camera.pixelsPerMetre,
+    );
+    const arrowLength = Math.max(6, Math.min(12, camera.pixelsPerMetre * 0.2));
+    const arrowHalfWidth = arrowLength * 0.55;
+
+    context.save();
+    context.strokeStyle = "#292d2c";
+    context.fillStyle = "#292d2c";
+    context.lineWidth = 2.5;
+    context.lineCap = "round";
+    context.lineJoin = "round";
+
+    if (hasVisibleSpan) {
+      context.setLineDash([8, 7]);
+      context.beginPath();
+      context.moveTo(leftX, verticalGeometry.dimensionY);
+      context.lineTo(rightX, verticalGeometry.dimensionY);
+      context.stroke();
+    }
+
+    context.setLineDash([]);
+    context.beginPath();
+    context.moveTo(leftX, verticalGeometry.capStartY);
+    context.lineTo(leftX, verticalGeometry.capEndY);
+    if (hasVisibleSpan) {
+      context.moveTo(rightX, verticalGeometry.capStartY);
+      context.lineTo(rightX, verticalGeometry.capEndY);
+      context.moveTo(leftX + arrowLength, verticalGeometry.dimensionY - arrowHalfWidth);
+      context.lineTo(leftX, verticalGeometry.dimensionY);
+      context.lineTo(leftX + arrowLength, verticalGeometry.dimensionY + arrowHalfWidth);
+      context.moveTo(rightX - arrowLength, verticalGeometry.dimensionY - arrowHalfWidth);
+      context.lineTo(rightX, verticalGeometry.dimensionY);
+      context.lineTo(rightX - arrowLength, verticalGeometry.dimensionY + arrowHalfWidth);
+    }
+    context.stroke();
+
+    const fontSize = Math.max(15, Math.min(22, camera.pixelsPerMetre * 0.46));
+    context.font = `700 ${fontSize}px "KG Primary Penmanship Alt", sans-serif`;
+    const labelY = verticalGeometry.capEndY + fontSize;
+    const prefixWidth = context.measureText(measurement.labelPrefix).width;
+    const valueWidthEstimate = measureCanvasMathValue(
+      context,
+      measurement.valueDisplay,
+      fontSize,
+    );
+    const unitWidth = context.measureText(" m").width;
+    const labelX = (leftX + rightX - prefixWidth - valueWidthEstimate - unitWidth) / 2;
+    const valueBounds = drawRangeMeasurementLabel(
+      context,
+      measurement,
+      labelX,
+      labelY,
+      fontSize,
+    );
+    const tooltip = getExactValueTooltip(
+      measurement.valueDisplay,
+      measurement.range,
+    );
+    if (tooltip) {
+      hoverTargets.push({
+        left: valueBounds.left - 4,
+        top: valueBounds.top - 4,
+        right: valueBounds.right + 4,
+        bottom: valueBounds.bottom + 4,
+        tooltip,
+      });
+    }
+    context.restore();
+  }
+  return hoverTargets;
+}
+
+function drawRangeMeasurementLabel(
+  context: CanvasRenderingContext2D,
+  measurement: RangeMeasurement,
+  x: number,
+  y: number,
+  fontSize: number,
+): { left: number; top: number; right: number; bottom: number } {
+  context.textAlign = "left";
+  context.textBaseline = "middle";
+  context.fillText(measurement.labelPrefix, x, y);
+  const valueStartX = x + context.measureText(measurement.labelPrefix).width;
+  const valueWidth = drawCanvasMathValue(
+    context,
+    measurement.valueDisplay,
+    valueStartX,
+    y,
+    fontSize,
+  );
+  context.fillText(" m", valueStartX + valueWidth, y);
+  return {
+    left: valueStartX,
+    top: y - fontSize * 0.85,
+    right: valueStartX + valueWidth,
+    bottom: y + fontSize * 0.85,
+  };
 }
 
 function drawHeightMeasurementLabel(
@@ -1708,30 +2797,29 @@ export function drawCanvasMathValue(
     context.fillText("−", cursorX, y);
     cursorX += context.measureText("−").width;
   }
+  return cursorX - x + drawCanvasSquareRoot(
+    context,
+    value.radicand,
+    cursorX,
+    y,
+    fontSize,
+  );
+}
 
-  const radical = "√";
-  context.fillText(radical, cursorX, y);
-  cursorX += context.measureText(radical).width - 1;
-  const radicandStartX = cursorX;
-  const radicandFraction = parseFraction(value.radicand);
-  const radicandWidth = radicandFraction
-    ? drawStackedFraction(
-        context,
-        radicandFraction.numerator,
-        radicandFraction.denominator,
-        radicandStartX,
-        y,
-        fontSize,
-      )
-    : drawPlainCanvasMath(context, value.radicand, radicandStartX, y);
-  const originalLineWidth = context.lineWidth;
-  context.lineWidth = 1.5;
-  context.beginPath();
-  context.moveTo(radicandStartX - 1, y - fontSize * 0.55);
-  context.lineTo(radicandStartX + radicandWidth + 2, y - fontSize * 0.55);
-  context.stroke();
-  context.lineWidth = originalLineWidth;
-  return cursorX - x + radicandWidth + 2;
+export function measureCanvasMathValue(
+  context: CanvasRenderingContext2D,
+  value: GreatestHeightMeasurement["valueDisplay"],
+  fontSize: number,
+): number {
+  if (typeof value === "string") {
+    return measureCanvasMathText(context, value, fontSize);
+  }
+  const signWidth = value.negative ? context.measureText("−").width : 0;
+  return signWidth + measureCanvasSquareRoot(
+    context,
+    value.radicand,
+    fontSize,
+  );
 }
 
 function drawCanvasMathText(
@@ -1753,6 +2841,56 @@ function drawCanvasMathText(
     cursorX += tokenWidth;
   }
   return cursorX - x;
+}
+
+function measureCanvasMathText(
+  context: CanvasRenderingContext2D,
+  value: string,
+  fontSize: number,
+): number {
+  return tokenizeMathText(value).reduce(
+    (width, token) => width + measureCanvasMathToken(context, token, fontSize),
+    0,
+  );
+}
+
+function measureCanvasMathToken(
+  context: CanvasRenderingContext2D,
+  token: MathToken,
+  fontSize: number,
+): number {
+  let baseWidth: number;
+  switch (token.kind) {
+    case "fraction":
+      baseWidth = measureStackedFraction(
+        context,
+        token.numerator,
+        token.denominator,
+        fontSize,
+      );
+      break;
+    case "rational-surd": {
+      const sign = token.numeratorCoefficient.startsWith("−") ? "−" : "";
+      const magnitude = token.numeratorCoefficient.replace(/^[−-]/, "");
+      const coefficient = magnitude === "1" ? "" : magnitude;
+      baseWidth = measureStackedFraction(
+        context,
+        `${sign}${coefficient}√(${token.radicand})`,
+        token.denominator,
+        fontSize,
+      );
+      break;
+    }
+    case "square-root":
+      baseWidth = measureCanvasSquareRoot(context, token.radicand, fontSize);
+      break;
+    case "space":
+      return context.measureText(" ").width;
+    default:
+      baseWidth = context.measureText(token.value).width;
+      break;
+  }
+  return baseWidth + measureCanvasExponent(context, token.exponent, fontSize);
 }
 
 function drawCanvasMathToken(
@@ -1821,10 +2959,12 @@ function drawCanvasSquareRoot(
   y: number,
   fontSize: number,
 ): number {
-  const radical = "√";
-  context.fillText(radical, x, y);
-  const radicalWidth = context.measureText(radical).width - 1;
+  const baselineY = getAlphabeticBaselineY(context, y, fontSize);
+  const radicalWidth = getCanvasRadicalWidth(fontSize);
   const radicandX = x + radicalWidth;
+  // Keep the radicand on precisely the baseline used by adjacent tokens.
+  // Converting just this text to an alphabetic baseline makes it appear as a
+  // superscript inside middle- and bottom-aligned expressions.
   const radicandWidth = drawCanvasMathText(
     context,
     radicand,
@@ -1832,14 +2972,169 @@ function drawCanvasSquareRoot(
     y,
     fontSize,
   );
+  const radicandExtents = measureCanvasMathVerticalExtents(
+    context,
+    radicand,
+    fontSize,
+  );
+  const topY = baselineY - radicandExtents.ascent - 1.5;
+  const bottomY = baselineY + radicandExtents.descent;
   const originalLineWidth = context.lineWidth;
   context.lineWidth = 1.5;
   context.beginPath();
-  context.moveTo(radicandX - 1, y - fontSize * 0.55);
-  context.lineTo(radicandX + radicandWidth + 2, y - fontSize * 0.55);
+  context.moveTo(x, baselineY - fontSize * 0.08);
+  context.lineTo(x + radicalWidth * 0.24, baselineY - fontSize * 0.08);
+  context.lineTo(x + radicalWidth * 0.4, bottomY);
+  context.lineTo(x + radicalWidth * 0.76, topY);
+  context.lineTo(radicandX + radicandWidth + 2, topY);
   context.stroke();
   context.lineWidth = originalLineWidth;
   return radicalWidth + radicandWidth + 2;
+}
+
+function measureCanvasSquareRoot(
+  context: CanvasRenderingContext2D,
+  radicand: string,
+  fontSize: number,
+): number {
+  return getCanvasRadicalWidth(fontSize) +
+    measureCanvasMathText(context, radicand, fontSize) + 2;
+}
+
+function getCanvasRadicalWidth(fontSize: number): number {
+  return Math.max(8, fontSize * 0.48);
+}
+
+function getAlphabeticBaselineY(
+  context: CanvasRenderingContext2D,
+  y: number,
+  fontSize: number,
+): number {
+  const metrics = getCanvasTextVerticalExtents(context, "Mg", fontSize);
+  switch (context.textBaseline) {
+    case "top":
+      return y + metrics.ascent;
+    case "hanging":
+      return y + metrics.ascent * 0.8;
+    case "middle":
+      return y + (metrics.ascent - metrics.descent) / 2;
+    case "bottom":
+      return y - metrics.descent;
+    case "ideographic":
+      return y - metrics.descent * 0.5;
+    default:
+      return y;
+  }
+}
+
+interface CanvasMathVerticalExtents {
+  ascent: number;
+  descent: number;
+}
+
+function measureCanvasMathVerticalExtents(
+  context: CanvasRenderingContext2D,
+  value: string,
+  fontSize: number,
+): CanvasMathVerticalExtents {
+  return tokenizeMathText(value).reduce<CanvasMathVerticalExtents>(
+    (extents, token) => {
+      const tokenExtents = measureCanvasMathTokenVerticalExtents(
+        context,
+        token,
+        fontSize,
+      );
+      return {
+        ascent: Math.max(extents.ascent, tokenExtents.ascent),
+        descent: Math.max(extents.descent, tokenExtents.descent),
+      };
+    },
+    { ascent: 0, descent: 0 },
+  );
+}
+
+function measureCanvasMathTokenVerticalExtents(
+  context: CanvasRenderingContext2D,
+  token: MathToken,
+  fontSize: number,
+): CanvasMathVerticalExtents {
+  let extents: CanvasMathVerticalExtents;
+  if (token.kind === "fraction") {
+    extents = measureStackedFractionVerticalExtents(
+      context,
+      token.numerator,
+      token.denominator,
+      fontSize,
+    );
+  } else if (token.kind === "rational-surd") {
+    const sign = token.numeratorCoefficient.startsWith("−") ? "−" : "";
+    const magnitude = token.numeratorCoefficient.replace(/^[−-]/, "");
+    const coefficient = magnitude === "1" ? "" : magnitude;
+    extents = measureStackedFractionVerticalExtents(
+      context,
+      `${sign}${coefficient}√(${token.radicand})`,
+      token.denominator,
+      fontSize,
+    );
+  } else if (token.kind === "square-root") {
+    const radicandExtents = measureCanvasMathVerticalExtents(
+      context,
+      token.radicand,
+      fontSize,
+    );
+    extents = {
+      ascent: radicandExtents.ascent + 1.5,
+      descent: radicandExtents.descent,
+    };
+  } else if (token.kind === "space") {
+    extents = { ascent: 0, descent: 0 };
+  } else {
+    extents = getCanvasTextVerticalExtents(context, token.value, fontSize);
+  }
+
+  if (!token.exponent) return extents;
+  return {
+    ascent: Math.max(extents.ascent, fontSize * 0.95),
+    descent: extents.descent,
+  };
+}
+
+function measureStackedFractionVerticalExtents(
+  context: CanvasRenderingContext2D,
+  numerator: string,
+  denominator: string,
+  fontSize: number,
+): CanvasMathVerticalExtents {
+  const originalFont = context.font;
+  const fractionFontSize = fontSize * 0.72;
+  context.font = `700 ${fractionFontSize}px "KG Primary Penmanship Alt", sans-serif`;
+  const numeratorExtents = measureCanvasMathVerticalExtents(
+    context,
+    numerator,
+    fractionFontSize,
+  );
+  const denominatorExtents = measureCanvasMathVerticalExtents(
+    context,
+    denominator,
+    fractionFontSize,
+  );
+  context.font = originalFont;
+  return {
+    ascent: 2 + numeratorExtents.ascent + numeratorExtents.descent,
+    descent: 2 + denominatorExtents.ascent + denominatorExtents.descent,
+  };
+}
+
+function getCanvasTextVerticalExtents(
+  context: CanvasRenderingContext2D,
+  text: string,
+  fontSize: number,
+): CanvasMathVerticalExtents {
+  const metrics = context.measureText(text);
+  return {
+    ascent: metrics.actualBoundingBoxAscent || fontSize * 0.76,
+    descent: metrics.actualBoundingBoxDescent || fontSize * 0.2,
+  };
 }
 
 function drawCanvasExponent(
@@ -1862,6 +3157,19 @@ function drawCanvasExponent(
   return width;
 }
 
+function measureCanvasExponent(
+  context: CanvasRenderingContext2D,
+  exponent: string | undefined,
+  fontSize: number,
+): number {
+  if (!exponent) return 0;
+  const originalFont = context.font;
+  context.font = `700 ${fontSize * 0.62}px "KG Primary Penmanship Alt", sans-serif`;
+  const width = context.measureText(exponent).width;
+  context.font = originalFont;
+  return width;
+}
+
 function drawStackedFraction(
   context: CanvasRenderingContext2D,
   numerator: string,
@@ -1871,19 +3179,32 @@ function drawStackedFraction(
   fontSize: number,
 ): number {
   const originalFont = context.font;
+  const originalTextAlign = context.textAlign;
+  const originalTextBaseline = context.textBaseline;
   const fractionFontSize = fontSize * 0.72;
   context.font = `700 ${fractionFontSize}px "KG Primary Penmanship Alt", sans-serif`;
-  const numeratorWidth = context.measureText(numerator).width;
-  const denominatorWidth = context.measureText(denominator).width;
+  const numeratorWidth = measureCanvasMathText(context, numerator, fractionFontSize);
+  const denominatorWidth = measureCanvasMathText(context, denominator, fractionFontSize);
   const width = Math.max(numeratorWidth, denominatorWidth) + 8;
-  const centreX = x + width / 2;
   const originalLineWidth = context.lineWidth;
 
-  context.textAlign = "center";
+  context.textAlign = "left";
   context.textBaseline = "bottom";
-  context.fillText(numerator, centreX, y - 2);
+  drawCanvasMathText(
+    context,
+    numerator,
+    x + (width - numeratorWidth) / 2,
+    y - 2,
+    fractionFontSize,
+  );
   context.textBaseline = "top";
-  context.fillText(denominator, centreX, y + 2);
+  drawCanvasMathText(
+    context,
+    denominator,
+    x + (width - denominatorWidth) / 2,
+    y + 2,
+    fractionFontSize,
+  );
   context.lineWidth = 1.5;
   context.beginPath();
   context.moveTo(x + 2, y);
@@ -1891,26 +3212,24 @@ function drawStackedFraction(
   context.stroke();
   context.lineWidth = originalLineWidth;
   context.font = originalFont;
-  context.textAlign = "left";
-  context.textBaseline = "middle";
+  context.textAlign = originalTextAlign;
+  context.textBaseline = originalTextBaseline;
   return width;
 }
 
-function drawPlainCanvasMath(
+function measureStackedFraction(
   context: CanvasRenderingContext2D,
-  value: string,
-  x: number,
-  y: number,
+  numerator: string,
+  denominator: string,
+  fontSize: number,
 ): number {
-  context.fillText(value, x, y);
-  return context.measureText(value).width;
-}
-
-function parseFraction(
-  value: string,
-): { numerator: string; denominator: string } | null {
-  const match = /^(-?\d+)\/(\d+)$/.exec(value);
-  return match ? { numerator: match[1], denominator: match[2] } : null;
+  const originalFont = context.font;
+  const fractionFontSize = fontSize * 0.72;
+  context.font = `700 ${fractionFontSize}px "KG Primary Penmanship Alt", sans-serif`;
+  const numeratorWidth = measureCanvasMathText(context, numerator, fractionFontSize);
+  const denominatorWidth = measureCanvasMathText(context, denominator, fractionFontSize);
+  context.font = originalFont;
+  return Math.max(numeratorWidth, denominatorWidth) + 8;
 }
 
 function renderInitialVelocityAnnotations(
@@ -1954,7 +3273,7 @@ function renderInitialVelocityAnnotations(
     context.save();
     context.strokeStyle = INITIAL_VELOCITY_COLOUR;
     context.fillStyle = INITIAL_VELOCITY_COLOUR;
-    context.lineWidth = 3;
+    context.lineWidth = calculateDiagramOutlineWidth(camera.pixelsPerMetre);
     context.lineCap = "round";
     context.setLineDash([10, 8]);
     context.beginPath();
@@ -2386,7 +3705,7 @@ function renderGround(
     const firstRoughLineX =
       positiveModulo(camera.screenPanOffset.x, roughLineSpacing) - roughLineSpacing;
     context.strokeStyle = mixColourWithWhite("#aaa69d", whiteMix);
-    context.lineWidth = 3;
+    context.lineWidth = calculateDiagramOutlineWidth(camera.pixelsPerMetre);
     context.beginPath();
     for (
       let x = firstRoughLineX;
@@ -2400,10 +3719,11 @@ function renderGround(
   }
 
   context.strokeStyle = mixColourWithWhite("#292d2c", whiteMix);
-  context.lineWidth = 3;
+  context.lineWidth = calculateDiagramOutlineWidth(camera.pixelsPerMetre);
+  context.lineCap = "butt";
   context.beginPath();
-  context.moveTo(0, groundY + 0.5);
-  context.lineTo(camera.viewportWidth, groundY + 0.5);
+  context.moveTo(0, groundY);
+  context.lineTo(camera.viewportWidth, groundY);
   context.stroke();
   context.restore();
 }
@@ -2428,7 +3748,7 @@ function renderParticle(
   const { centre, radius } = geometry;
 
   context.save();
-  const outlineWidth = 3;
+  const outlineWidth = calculateDiagramOutlineWidth(camera.pixelsPerMetre);
   const colours = getParticleRenderColours(whiteMix, invalid);
   context.fillStyle = colours.fill;
   context.strokeStyle = colours.stroke;

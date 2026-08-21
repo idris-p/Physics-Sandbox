@@ -16,6 +16,8 @@
 
 :root {
   --pencil-grey: #cbc8c0;
+  --app-gui-scale: 0.9;
+  --scene-scale-compensation: 1.1111111111;
   font-family:
     "KG Primary Penmanship Alt", ui-sans-serif, system-ui, sans-serif;
   color: #242725;
@@ -36,6 +38,10 @@ body {
   margin: 0;
   overflow: hidden;
   line-height: 1.2;
+}
+
+body {
+  zoom: var(--app-gui-scale);
 }
 
 button,
@@ -149,6 +155,11 @@ button:disabled {
   align-items: center;
 }
 
+.connected-length-row[hidden],
+#connected-pulley-length-controls[hidden] {
+  display: none;
+}
+
 .connected-length-control {
   display: grid;
   grid-template-columns: 78px 20px;
@@ -236,6 +247,7 @@ button:disabled {
   height: 100%;
   cursor: default;
   touch-action: none;
+  zoom: var(--scene-scale-compensation);
 }
 
 #scene-canvas.is-placing {
@@ -262,6 +274,15 @@ button:disabled {
   cursor: ew-resize;
 }
 
+#scene-canvas.is-hovering-table-resize-handle,
+#scene-canvas.is-resizing-table {
+  cursor: move;
+}
+
+#scene-canvas.is-hovering-table-resize-arrow {
+  cursor: pointer;
+}
+
 #scene-canvas.is-drop-target {
   outline: 5px solid #242725;
   outline-offset: -5px;
@@ -273,6 +294,7 @@ button:disabled {
   inset: 0;
   overflow: hidden;
   pointer-events: none;
+  zoom: var(--scene-scale-compensation);
 }
 
 .canvas-math-label {
@@ -303,6 +325,7 @@ button:disabled {
   line-height: 1;
   pointer-events: none;
   white-space: pre-line;
+  zoom: var(--scene-scale-compensation);
 }
 
 .exact-value-tooltip[hidden] {
@@ -405,6 +428,65 @@ button:disabled {
   stroke-width: 3;
 }
 
+.hotbar-incline *,
+.hotbar-table *,
+.delete-slot svg * {
+  vector-effect: non-scaling-stroke;
+}
+
+.hotbar-table {
+  width: 38px;
+  height: 31px;
+  overflow: visible;
+  fill: #dedbd3;
+  stroke: #242725;
+  stroke-linejoin: round;
+  stroke-width: 3;
+}
+
+.hotbar-pulley {
+  width: 40px;
+  height: 40px;
+  overflow: visible;
+  fill: #f8f7f1;
+  stroke: #242725;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.5;
+}
+
+.hotbar-pulley circle:first-of-type {
+  fill: #dedbd3;
+}
+
+.hotbar-pulley circle:nth-of-type(n + 2) {
+  fill: #dedbd3;
+}
+
+.table-drag-preview,
+.pulley-drag-preview {
+  position: fixed;
+  z-index: 9999;
+  border: 3px solid #242725;
+  background: #cbc8c0;
+  pointer-events: none;
+  zoom: var(--scene-scale-compensation);
+}
+
+.pulley-drag-preview {
+  border-radius: 50%;
+}
+
+.pulley-drag-preview.is-invalid {
+  border-color: #a62d26;
+  background: #e89a8f;
+}
+
+.table-drag-preview.is-invalid {
+  border-color: #a62d26;
+  background: #e5aaa5;
+}
+
 .hotbar-slot.is-active .hotbar-particle {
   border-color: #242725;
 }
@@ -433,7 +515,7 @@ button:disabled {
   stroke: currentColor;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 2.2;
+  stroke-width: 3;
 }
 
 .delete-slot:hover:not(:disabled) {
@@ -458,6 +540,7 @@ button:disabled {
   line-height: 1;
   opacity: 1;
   pointer-events: none;
+  zoom: var(--scene-scale-compensation);
 }
 
 .particle-drag-preview.is-square {
@@ -474,6 +557,7 @@ button:disabled {
   position: fixed;
   z-index: 9999;
   pointer-events: none;
+  zoom: var(--scene-scale-compensation);
 }
 
 .incline-drag-preview svg {
@@ -546,6 +630,7 @@ button:disabled {
 .particle-properties,
 .ground-properties,
 .incline-properties,
+.table-properties,
 .connected-system-properties {
   position: relative;
   width: 100%;
@@ -566,6 +651,7 @@ button:disabled {
 .particle-properties,
 .ground-properties,
 .incline-properties,
+.table-properties,
 .connected-system-properties {
   pointer-events: auto;
 }
@@ -587,6 +673,7 @@ button:disabled {
 .particle-properties h2,
 .ground-properties h2,
 .incline-properties h2,
+.table-properties h2,
 .connected-system-properties h2 {
   display: flex;
   flex: 1;
@@ -601,6 +688,7 @@ button:disabled {
 .particle-properties h2,
 .ground-properties h2,
 .incline-properties h2,
+.table-properties h2,
 .connected-system-properties h2 {
   min-height: 58px;
   border-radius: 13px 13px 0 0;
@@ -841,6 +929,7 @@ button:disabled {
 .particle-properties.is-hidden,
 .ground-properties.is-hidden,
 .incline-properties.is-hidden,
+.table-properties.is-hidden,
 .connected-system-properties.is-hidden {
   display: none;
 }
@@ -2035,6 +2124,13 @@ button:disabled {
   font-size: 1em;
   font-weight: 400;
   white-space: nowrap;
+}
+
+.canvas-rendered-math {
+  display: inline-block;
+  flex: 0 0 auto;
+  max-width: none;
+  vertical-align: middle;
 }
 
 .suvat-math mi,

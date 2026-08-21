@@ -4,6 +4,7 @@ import { createAppliedForce } from "../model/AppliedForce";
 import { createIncline } from "../model/Incline";
 import { createParticle } from "../model/Particle";
 import { createScene } from "../model/Scene";
+import { createTable } from "../model/Table";
 import { connectParticlesWithString } from "../dynamics/stringConnection";
 import { calculateSceneState } from "./calculateSceneState";
 import { calculateConnectedSystemTrajectory } from "./connectedTrajectory";
@@ -56,6 +57,53 @@ describe("analytical connected trajectories", () => {
       trajectory.analysis.scalarVelocity * trajectory.evaluatedTime +
       0.5 * trajectory.analysis.commonAcceleration! * trajectory.evaluatedTime ** 2;
     expect(qB).toBeCloseTo(geometry.slopeLength, 10);
+  });
+
+  it("moves a taut connected system along a Table and stops at its endpoint", () => {
+    const scene = createScene();
+    const table = createTable("table", { x: 0, y: 5 }, 10, 5);
+    const a = createParticle("a", { x: 2, y: 5 });
+    const b = createParticle("b", { x: 6, y: 5 });
+    a.initialTableContact = { tableId: table.id, q: 2 };
+    b.initialTableContact = { tableId: table.id, q: 6 };
+    a.initialVelocity.x = 1;
+    b.initialVelocity.x = 1;
+    scene.tables.push(table);
+    scene.particles.push(a, b);
+    const result = connectParticlesWithString(scene, "string", a.id, b.id);
+    if (!result.ok) throw new Error(result.message);
+
+    const trajectory = calculateConnectedSystemTrajectory(scene, result.string, 100)!;
+
+    expect(trajectory.boundaryEvent?.message).toContain("Table");
+    expect(trajectory.evaluatedTime).toBeCloseTo(4, 12);
+    expect(trajectory.states[0].position).toEqual({ x: 6, y: 5 });
+    expect(trajectory.states[1].position).toEqual({ x: 10, y: 5 });
+  });
+
+  it("keeps slack Table endpoints independent until the string becomes taut", () => {
+    const scene = createScene();
+    const table = createTable("table", { x: 0, y: 5 }, 20, 5);
+    const a = createParticle("a", { x: 2, y: 5 });
+    const b = createParticle("b", { x: 6, y: 5 });
+    a.initialTableContact = { tableId: table.id, q: 2 };
+    b.initialTableContact = { tableId: table.id, q: 6 };
+    const force = createAppliedForce("force");
+    force.vector.x = 2;
+    b.appliedForces.push(force);
+    scene.tables.push(table);
+    scene.particles.push(a, b);
+    const result = connectParticlesWithString(scene, "string", a.id, b.id);
+    if (!result.ok) throw new Error(result.message);
+    result.string.length = 10;
+    result.string.lengthInput = "10";
+
+    const trajectory = calculateConnectedSystemTrajectory(scene, result.string, 1)!;
+
+    expect(trajectory.analysis.state).toBe("slack");
+    expect(trajectory.boundaryEvent).toBeNull();
+    expect(trajectory.states[0].position).toEqual({ x: 2, y: 5 });
+    expect(trajectory.states[1].position).toEqual({ x: 7, y: 5 });
   });
 
   it("moves slack endpoints independently with zero Tension", () => {
